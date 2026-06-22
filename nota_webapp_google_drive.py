@@ -30,7 +30,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
@@ -53,9 +53,7 @@ except Exception:
     MediaFileUpload = None
     MediaIoBaseDownload = None
 
-APP_TITLE = "NOTA FinancePlus Cloud"
-APP_SUBTITLE = "Data. Strategy. Results."
-LOGO_PATH = Path("financeplus_logo.jpeg")
+APP_TITLE = "NOTA - Gestionale Web"
 DATA_DIR = Path("nota_webapp_dati")
 UPLOAD_DIR = DATA_DIR / "uploads"
 PDF_DIR = DATA_DIR / "pdf"
@@ -224,73 +222,11 @@ def extract_company_data_from_pdf(path):
     return result
 
 
-
-def logo_exists():
-    return LOGO_PATH.exists()
-
-
-def inject_brand_css():
-    """Applica logo come sfondo leggero su dashboard, finestre/form e sidebar."""
-    if logo_exists():
-        import base64
-        logo_b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("utf-8")
-        st.markdown(f"""
-        <style>
-        .stApp {{
-            background-image: linear-gradient(rgba(255,255,255,0.94), rgba(255,255,255,0.94)), url('data:image/jpeg;base64,{logo_b64}');
-            background-repeat: no-repeat;
-            background-position: center 130px;
-            background-size: min(560px, 70vw);
-            background-attachment: fixed;
-        }}
-        section[data-testid="stSidebar"] {{
-            background: linear-gradient(180deg, #082449 0%, #0b376b 100%);
-        }}
-        section[data-testid="stSidebar"] * {{ color: white !important; }}
-        div[data-testid="stForm"], div[data-testid="stMetric"], div[data-testid="stDataFrame"], .stTabs [data-baseweb="tab-panel"] {{
-            background: rgba(255,255,255,0.88);
-            border-radius: 14px;
-            padding: 12px;
-            box-shadow: 0 2px 12px rgba(8,36,73,0.08);
-        }}
-        h1, h2, h3 {{ color: #082449; }}
-        </style>
-        """, unsafe_allow_html=True)
-    else:
-        st.warning("Logo non trovato: inserisci financeplus_logo.jpeg nella cartella dell'app.")
-
-
-def pdf_background(canvas, doc):
-    """Sfondo/logo e intestazione per ogni PDF generato."""
-    width, height = landscape(A4)
-    if logo_exists():
-        try:
-            canvas.saveState()
-            canvas.setFillAlpha(0.08)
-            canvas.drawImage(str(LOGO_PATH), width/2-170, height/2-170, width=340, height=340, preserveAspectRatio=True, mask='auto')
-            canvas.restoreState()
-            canvas.drawImage(str(LOGO_PATH), 20, height-64, width=46, height=46, preserveAspectRatio=True, mask='auto')
-        except Exception:
-            pass
-    canvas.saveState()
-    canvas.setFont("Helvetica-Bold", 10)
-    canvas.setFillColor(colors.HexColor("#082449"))
-    canvas.drawString(72, height-42, "FinancePlus.Tech - DATA. STRATEGY. RESULTS.")
-    canvas.setFont("Helvetica", 8)
-    canvas.drawRightString(width-20, height-42, dt.datetime.now().strftime("%d/%m/%Y %H:%M"))
-    canvas.restoreState()
-
 def make_pdf(title, df, filename):
     path = PDF_DIR / filename
-    doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), rightMargin=18, leftMargin=18, topMargin=74, bottomMargin=24)
+    doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), rightMargin=18, leftMargin=18, topMargin=18, bottomMargin=18)
     styles = getSampleStyleSheet()
-    story = []
-    if logo_exists():
-        try:
-            story.append(RLImage(str(LOGO_PATH), width=70, height=70))
-        except Exception:
-            pass
-    story += [Paragraph(title, styles["Title"]), Spacer(1, 10)]
+    story = [Paragraph(title, styles["Title"]), Spacer(1, 10)]
     if df.empty:
         story.append(Paragraph("Nessun dato disponibile.", styles["Normal"]))
     else:
@@ -304,7 +240,7 @@ def make_pdf(title, df, filename):
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         story.append(table)
-    doc.build(story, onFirstPage=pdf_background, onLaterPages=pdf_background)
+    doc.build(story)
     return path
 
 
@@ -364,72 +300,14 @@ def sync_all_to_drive():
     st.success("Sincronizzazione completata su Google Drive.")
 
 
-
-def get_users_config():
-    """Utenti da Streamlit secrets oppure fallback locale demo."""
-    try:
-        users = dict(st.secrets.get("users", {}))
-        if users:
-            return users
-    except Exception:
-        pass
-    return {
-        "admin": {"password": "admin123", "role": "Admin", "name": "Admin FinancePlus"},
-        "gestore": {"password": "gestore123", "role": "Gestore", "name": "Gestore"},
-        "collaboratore": {"password": "collab123", "role": "Collaboratore", "name": "Collaboratore"},
-    }
-
-
-def login_box():
-    if "auth" not in st.session_state:
-        st.session_state.auth = False
-        st.session_state.user = None
-        st.session_state.role = None
-        st.session_state.name = None
-    if st.session_state.auth:
-        return True
-    col1, col2, col3 = st.columns([1, 1.2, 1])
-    with col2:
-        if logo_exists():
-            st.image(str(LOGO_PATH), use_container_width=True)
-        st.title("NOTA FinancePlus Cloud")
-        st.caption("Accesso riservato - PC, iPhone, iPad e desktop")
-        with st.form("login_form"):
-            username = st.text_input("Utente")
-            password = st.text_input("Password", type="password")
-            ok = st.form_submit_button("Entra", use_container_width=True)
-        if ok:
-            users = get_users_config()
-            if username in users and password == users[username].get("password"):
-                st.session_state.auth = True
-                st.session_state.user = username
-                st.session_state.role = users[username].get("role", "Utente")
-                st.session_state.name = users[username].get("name", username)
-                st.rerun()
-            else:
-                st.error("Credenziali non corrette.")
-        st.info("Credenziali demo: admin / admin123. Cambiale nei secrets prima della pubblicazione.")
-    return False
-
 def sidebar():
-    if logo_exists():
-        st.sidebar.image(str(LOGO_PATH), use_container_width=True)
-    st.sidebar.title("FinancePlus.Tech")
-    st.sidebar.caption(f"Utente: {st.session_state.get('name', '')} - Ruolo: {st.session_state.get('role', '')}")
-    menu = st.sidebar.radio("Menu", ["Dashboard", "NOTA", "ANAGRAFICA", "CALL/VCALL", "REPORT", "CALENDARIO", "GOOGLE DRIVE", "IMPOSTAZIONI"])
-    if st.sidebar.button("Logout"):
-        st.session_state.auth = False
-        st.session_state.user = None
-        st.session_state.role = None
-        st.session_state.name = None
-        st.rerun()
-    st.sidebar.caption("NOTA Cloud - PC, iPhone, iPad e desktop")
+    st.sidebar.title("Dashboard")
+    menu = st.sidebar.radio("Menu", ["Dashboard", "NOTA", "ANAGRAFICA", "CALL/VCALL", "REPORT", "CALENDARIO", "GOOGLE DRIVE"])
+    st.sidebar.caption("NOTA Web App - PC, tablet e cellulare")
     return menu
 
 
 def show_dashboard():
-    if logo_exists():
-        st.image(str(LOGO_PATH), width=210)
     st.title(APP_TITLE)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Note", len(query_df("SELECT id FROM note")))
@@ -655,32 +533,10 @@ def page_drive():
     st.info("Per usarla da cellulare e PC: pubblica l'app su Streamlit Community Cloud/Render oppure eseguila su un PC sempre acceso e accedi dal browser.")
 
 
-
-def page_impostazioni():
-    st.header("Impostazioni pubblicazione e iPhone")
-    st.success("Questa versione e' predisposta per pubblicazione cloud e icona su iOS.")
-    st.markdown("""
-    **Uso da iPhone**
-    1. Pubblica la app su Streamlit Cloud, Render, Railway o server aziendale.
-    2. Apri il link con Safari.
-    3. Tocca Condividi.
-    4. Tocca **Aggiungi a schermata Home**.
-    5. Conferma il nome **NOTA FinancePlus**.
-
-    **Dominio consigliato**
-    `nota.financeplus.tech`
-
-    **Google Drive**
-    Usa la sezione Google Drive per sincronizzare database, upload e PDF nella cartella `NOTA_WEBAPP_DATI`.
-    """)
-    st.code("streamlit run nota_webapp_google_drive.py")
-
 def main():
-    st.set_page_config(page_title=APP_TITLE, page_icon=str(LOGO_PATH) if logo_exists() else "📊", layout="wide")
-    inject_brand_css()
+    inject_pwa_links()
+    st.set_page_config(page_title=APP_TITLE, layout="wide")
     init_db()
-    if not login_box():
-        return
     menu = sidebar()
     if menu == "Dashboard":
         show_dashboard()
@@ -696,8 +552,6 @@ def main():
         page_calendario()
     elif menu == "GOOGLE DRIVE":
         page_drive()
-    elif menu == "IMPOSTAZIONI":
-        page_impostazioni()
 
 
 if __name__ == "__main__":

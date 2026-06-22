@@ -534,7 +534,7 @@ def page_drive():
 
 
 def main():
-    inject_pwa_links()
+
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     init_db()
     menu = sidebar()

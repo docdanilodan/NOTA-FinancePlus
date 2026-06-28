@@ -1,11 +1,7 @@
 
-import os
-import sqlite3
-import base64
-import json
-from datetime import datetime, date, time, timedelta
+import sqlite3, base64, re
 from pathlib import Path
-
+from datetime import datetime, date
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -13,424 +9,248 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import cm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
-APP_NAME = "NOTA FinancePlus"
-DB_PATH = Path("data/financeplus_360.db")
-REPORT_DIR = Path("data/report")
-UPLOAD_DIR = Path("data/uploads")
-MANUAL_DIR = Path("manuali")
-STATIC_DIR = Path("static")
-for p in [DB_PATH.parent, REPORT_DIR, UPLOAD_DIR, MANUAL_DIR, STATIC_DIR]:
-    p.mkdir(exist_ok=True, parents=True)
+DATA=Path("data"); UPLOADS=DATA/"uploads"; EXPORTS=Path("exports"); STATIC=Path("static"); MANUALI=Path("manuali")
+for p in [DATA,UPLOADS,EXPORTS,STATIC,MANUALI]: p.mkdir(exist_ok=True,parents=True)
+DB=DATA/"financeplus_360_v2.db"
 
-st.set_page_config(
-    page_title="NOTA FinancePlus",
-    page_icon="static/favicon.png" if Path("static/favicon.png").exists() else "💼",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="FinancePlus 360 Enterprise", page_icon="static/favicon.png", layout="wide")
 
-def inject_pwa_links():
-    """Inject PWA/iPhone icon links without breaking Streamlit if files are missing."""
-    manifest = "static/manifest.json"
-    apple = "static/apple-touch-icon.png"
-    favicon = "static/favicon.png"
-    html = []
-    if Path(manifest).exists():
-        html.append(f'<link rel="manifest" href="{manifest}">')
-    if Path(apple).exists():
-        html.append(f'<link rel="apple-touch-icon" href="{apple}">')
-    if Path(favicon).exists():
-        html.append(f'<link rel="icon" type="image/png" href="{favicon}">')
-    html.append('<meta name="apple-mobile-web-app-capable" content="yes">')
-    html.append('<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">')
-    html.append('<meta name="apple-mobile-web-app-title" content="NOTA FinancePlus">')
-    st.markdown("\n".join(html), unsafe_allow_html=True)
-
-inject_pwa_links()
-
-def css():
+def inject():
     st.markdown("""
-    <style>
-    .stApp {background: linear-gradient(180deg, #F7F9FC 0%, #EEF3F9 100%);}
-    section[data-testid="stSidebar"] {background: #0B2E5B;}
-    section[data-testid="stSidebar"] * {color: white !important;}
-    .fp-card {background:#fff; border:1px solid #d9e2ef; border-radius:18px; padding:18px; box-shadow:0 6px 20px rgba(11,46,91,.08);}
-    .fp-title {color:#0B2E5B; font-weight:800; letter-spacing:.3px;}
-    .fp-bronze {color:#B87333;}
-    .metric-card {background:#fff; border-radius:16px; padding:16px; border-left:5px solid #B87333; box-shadow:0 4px 16px rgba(0,0,0,.06);}
-    </style>
-    """, unsafe_allow_html=True)
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="FinancePlus">
+<link rel="manifest" href="static/manifest.json">
+<link rel="apple-touch-icon" href="static/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="static/favicon.png">
+<style>
+.stApp{background:linear-gradient(180deg,#F5F8FC 0%,#EDF3FA 100%)}
+section[data-testid="stSidebar"]{background:linear-gradient(180deg,#071F3D,#0B2E5B)}
+section[data-testid="stSidebar"] *{color:white!important}
+.fp-hero{background:linear-gradient(135deg,#0B2E5B,#123E73 70%,#B87333);padding:24px;border-radius:22px;color:white;box-shadow:0 10px 30px rgba(11,46,91,.22)}
+.fp-card{background:white;border:1px solid #D8E2EE;border-radius:20px;padding:18px;box-shadow:0 8px 24px rgba(10,35,66,.08)}
+.fp-metric{background:white;border-radius:18px;padding:18px;border-left:6px solid #B87333;box-shadow:0 8px 22px rgba(10,35,66,.08)}
+.fp-metric h2{color:#0B2E5B;margin:0;font-size:34px}
+.fp-metric p{color:#5E7187;margin:0;font-weight:700}
+</style>""", unsafe_allow_html=True)
+inject()
 
-css()
+def con(): return sqlite3.connect(DB)
+def init():
+    c=con(); cur=c.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS utenti(id INTEGER PRIMARY KEY, username TEXT UNIQUE,password TEXT,ruolo TEXT,nome TEXT,attivo INTEGER DEFAULT 1)")
+    cur.execute("CREATE TABLE IF NOT EXISTS anagrafiche(id INTEGER PRIMARY KEY,tipo TEXT,nome TEXT,cognome TEXT,mail TEXT,cell TEXT,note TEXT,created_at TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS aziende(id INTEGER PRIMARY KEY,ragione_sociale TEXT,piva TEXT,cf TEXT,amministratore TEXT,sede TEXT,pec TEXT,collaboratore TEXT,settore TEXT,note TEXT,created_at TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS note(id INTEGER PRIMARY KEY,data TEXT,ora TEXT,mittente_tipo TEXT,mittente TEXT,destinatario_tipo TEXT,destinatario TEXT,azienda TEXT,banca TEXT,importo REAL,strumento TEXT,richiesta TEXT,stato TEXT,allegato TEXT,created_at TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS pratiche(id INTEGER PRIMARY KEY,azienda TEXT,strumento TEXT,banca TEXT,importo REAL,durata TEXT,stato TEXT,priorita TEXT,descrizione TEXT,created_at TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS documenti(id INTEGER PRIMARY KEY,azienda TEXT,categoria TEXT,filename TEXT,path TEXT,descrizione TEXT,created_at TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS eventi(id INTEGER PRIMARY KEY,tipo TEXT,data TEXT,ora TEXT,organizzatore_tipo TEXT,organizzatore TEXT,destinatario_tipo TEXT,destinatario TEXT,luogo TEXT,azienda TEXT,banca TEXT,importo REAL,strumento TEXT,richiesta TEXT,created_at TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY,modulo TEXT,azione TEXT,dettaglio TEXT,created_at TEXT)")
+    cur.execute("INSERT OR IGNORE INTO utenti(username,password,ruolo,nome) VALUES('admin','admin123','Admin','Amministratore')")
+    c.commit(); c.close()
+def q(sql,p=()):
+    c=con(); d=pd.read_sql_query(sql,c,params=p); c.close(); return d
+def x(sql,p=()):
+    c=con(); cur=c.cursor(); cur.execute(sql,p); c.commit(); c.close()
+def log(m,a,d=""): x("INSERT INTO logs(modulo,azione,dettaglio,created_at) VALUES(?,?,?,?)",(m,a,d,datetime.now().isoformat()))
+init()
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS utenti(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT, ruolo TEXT, nome TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS persone(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, nome TEXT, cognome TEXT, mail TEXT, cell TEXT, created_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS aziende(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, ragione_sociale TEXT, piva TEXT, amministratore TEXT, sede TEXT, pec TEXT, collaboratore TEXT, created_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS note(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT, ora TEXT, mittente_tipo TEXT, mittente TEXT, destinatario_tipo TEXT, destinatario TEXT,
-        azienda TEXT, banca TEXT, importo TEXT, strumento TEXT, richiesta TEXT, stato TEXT, created_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS pratiche(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, azienda TEXT, tipo TEXT, banca TEXT, importo TEXT, stato TEXT, descrizione TEXT, created_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS eventi(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, categoria TEXT, data TEXT, ora TEXT, organizzatore_tipo TEXT, organizzatore TEXT,
-        destinatario_tipo TEXT, destinatario TEXT, luogo TEXT, azienda TEXT, banca TEXT, importo TEXT, strumento TEXT, richiesta TEXT, created_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS documenti(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, azienda TEXT, categoria TEXT, filename TEXT, path TEXT, note TEXT, created_at TEXT)""")
-    c.execute("INSERT OR IGNORE INTO utenti(username,password,ruolo,nome) VALUES('admin','admin123','Admin','Amministratore')")
-    conn.commit()
-    conn.close()
-
-def q(sql, params=()):
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(sql, conn, params=params)
-    conn.close()
-    return df
-
-def execute(sql, params=()):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(sql, params)
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def logo_html(width=180):
-    logo = STATIC_DIR / "financeplus_logo.jpeg"
-    if logo.exists():
-        data = base64.b64encode(logo.read_bytes()).decode()
-        return f'<img src="data:image/jpeg;base64,{data}" width="{width}">'
-    return "<h2>FinancePlus.Tech</h2>"
+def b64(p):
+    p=Path(p)
+    return base64.b64encode(p.read_bytes()).decode() if p.exists() else ""
+def logo(w=170):
+    p=STATIC/"financeplus_logo.jpeg"
+    return f"<img src='data:image/jpeg;base64,{b64(p)}' width='{w}'>" if p.exists() else "<b>FinancePlus.Tech</b>"
+def money(v):
+    try: return float(str(v).replace(".","").replace(",","."))
+    except: return 0.0
+def people(t=None):
+    if t: d=q("SELECT nome||' '||cognome n FROM anagrafiche WHERE tipo=? ORDER BY cognome,nome",(t,))
+    else: d=q("SELECT nome||' '||cognome n FROM anagrafiche ORDER BY cognome,nome")
+    return d.n.tolist() if len(d) else []
+def azs():
+    d=q("SELECT ragione_sociale FROM aziende ORDER BY ragione_sociale")
+    return d.ragione_sociale.tolist() if len(d) else []
+def safe(s): return re.sub(r"[^A-Za-z0-9_ -]","_",s or "Senza_Azienda").strip().replace(" ","_")
+def save_file(f,sub):
+    if not f: return ""
+    folder=UPLOADS/sub; folder.mkdir(parents=True,exist_ok=True)
+    p=folder/f.name; p.write_bytes(f.getvalue()); return str(p)
+def pdf(title, sections, filename):
+    out=EXPORTS/filename; styles=getSampleStyleSheet(); story=[]
+    if (STATIC/"financeplus_logo.jpeg").exists(): story.append(Image(str(STATIC/"financeplus_logo.jpeg"),width=4*cm,height=4*cm))
+    story += [Paragraph(title,styles["Title"]), Paragraph(datetime.now().strftime("%d/%m/%Y %H:%M"),styles["Normal"]), Spacer(1,12)]
+    for h,d in sections:
+        story.append(Paragraph(h,styles["Heading2"]))
+        if isinstance(d,pd.DataFrame):
+            if len(d):
+                t=[d.columns.tolist()]+d.fillna("").astype(str).values.tolist()
+                table=Table(t,repeatRows=1)
+                table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#0B2E5B")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),.25,colors.grey),("FONTSIZE",(0,0),(-1,-1),7)]))
+                story.append(table)
+            else: story.append(Paragraph("Nessun dato.",styles["Normal"]))
+        else: story.append(Paragraph(str(d),styles["Normal"]))
+        story.append(Spacer(1,12))
+    SimpleDocTemplate(str(out)).build(story); return out
+def hero(t,s): st.markdown(f"<div class='fp-hero'><h1>{t}</h1><p>{s}</p></div>",unsafe_allow_html=True); st.write("")
 
 def login():
-    col1, col2, col3 = st.columns([1,1.2,1])
-    with col2:
-        st.markdown("<div class='fp-card' style='text-align:center'>", unsafe_allow_html=True)
-        st.markdown(logo_html(210), unsafe_allow_html=True)
-        st.markdown("<h2 class='fp-title'>NOTA FinancePlus Cloud</h2>", unsafe_allow_html=True)
-        u = st.text_input("Utente")
-        p = st.text_input("Password", type="password")
-        if st.button("Entra", use_container_width=True):
-            df = q("SELECT * FROM utenti WHERE username=? AND password=?", (u,p))
-            if len(df):
-                st.session_state["auth"] = True
-                st.session_state["user"] = df.iloc[0].to_dict()
-                st.rerun()
-            else:
-                st.error("Credenziali non valide")
-        st.caption("Accesso iniziale: admin / admin123")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-def persona_select(label, tipo=None):
-    if tipo:
-        df = q("SELECT nome || ' ' || cognome AS nominativo FROM persone WHERE tipo=? ORDER BY cognome,nome", (tipo,))
-    else:
-        df = q("SELECT nome || ' ' || cognome AS nominativo FROM persone ORDER BY cognome,nome")
-    opts = df["nominativo"].tolist() if len(df) else []
-    if not opts:
-        st.info("Nessun nominativo presente. Inserire prima Collaboratori o Gestori in Anagrafica.")
-        return ""
-    return st.selectbox(label, opts)
-
-def aziende_options():
-    df = q("SELECT ragione_sociale FROM aziende ORDER BY ragione_sociale")
-    return df["ragione_sociale"].tolist() if len(df) else []
-
-def save_pdf(title, sections, filename):
-    path = REPORT_DIR / filename
-    styles = getSampleStyleSheet()
-    story = []
-    logo = STATIC_DIR / "financeplus_logo.jpeg"
-    if logo.exists():
-        story.append(Image(str(logo), width=4*cm, height=4*cm))
-    story.append(Paragraph(title, styles["Title"]))
-    story.append(Spacer(1, 12))
-    for h, body in sections:
-        story.append(Paragraph(h, styles["Heading2"]))
-        if isinstance(body, pd.DataFrame):
-            if len(body):
-                table_data = [body.columns.tolist()] + body.astype(str).values.tolist()
-                tbl = Table(table_data, repeatRows=1)
-                tbl.setStyle(TableStyle([
-                    ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#0B2E5B")),
-                    ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-                    ("GRID",(0,0),(-1,-1),0.25,colors.grey),
-                    ("FONTSIZE",(0,0),(-1,-1),7),
-                ]))
-                story.append(tbl)
-            else:
-                story.append(Paragraph("Nessun dato disponibile.", styles["BodyText"]))
-        else:
-            story.append(Paragraph(str(body).replace("\n","<br/>"), styles["BodyText"]))
-        story.append(Spacer(1, 10))
-    SimpleDocTemplate(str(path)).build(story)
-    return path
+    c1,c2,c3=st.columns([1,1.2,1])
+    with c2:
+        st.markdown("<div class='fp-card' style='text-align:center'>",unsafe_allow_html=True)
+        st.markdown(logo(220),unsafe_allow_html=True)
+        st.markdown("## FinancePlus 360 Enterprise")
+        u=st.text_input("Utente"); p=st.text_input("Password",type="password")
+        if st.button("Entra",use_container_width=True):
+            d=q("SELECT * FROM utenti WHERE username=? AND password=? AND attivo=1",(u,p))
+            if len(d): st.session_state.auth=True; st.session_state.user=d.iloc[0].to_dict(); log("LOGIN","accesso",u); st.rerun()
+            else: st.error("Credenziali non valide")
+        st.info("Accesso iniziale: admin / admin123")
+        st.markdown("</div>",unsafe_allow_html=True)
 
 def dashboard():
-    st.markdown("<h1 class='fp-title'>Dashboard Direzionale</h1>", unsafe_allow_html=True)
-    note = q("SELECT * FROM note")
-    az = q("SELECT * FROM aziende")
-    pers = q("SELECT * FROM persone")
-    pr = q("SELECT * FROM pratiche")
-    ev = q("SELECT * FROM eventi")
-    c1,c2,c3,c4,c5 = st.columns(5)
-    for col, label, val in [(c1,"Note",len(note)),(c2,"Aziende",len(az)),(c3,"Persone",len(pers)),(c4,"Pratiche",len(pr)),(c5,"Eventi",len(ev))]:
-        col.markdown(f"<div class='metric-card'><b>{label}</b><h2>{val}</h2></div>", unsafe_allow_html=True)
-    st.divider()
-    colA, colB = st.columns(2)
-    with colA:
-        st.subheader("Stato Note")
-        if len(note):
-            fig = px.pie(note, names="stato")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Nessuna nota inserita.")
-    with colB:
+    hero("Dashboard Direzionale","Controllo unico di attività, pratiche, documenti, note e calendario.")
+    items=[("Note","note"),("Aziende","aziende"),("Pratiche","pratiche"),("Documenti","documenti"),("Eventi","eventi")]
+    cols=st.columns(5)
+    for col,(lab,tab) in zip(cols,items):
+        n=len(q(f"SELECT * FROM {tab}"))
+        col.markdown(f"<div class='fp-metric'><p>{lab}</p><h2>{n}</h2></div>",unsafe_allow_html=True)
+    a,b=st.columns(2)
+    with a:
+        st.subheader("Note per stato")
+        d=q("SELECT stato,COUNT(*) c FROM note GROUP BY stato")
+        st.plotly_chart(px.pie(d,names="stato",values="c") if len(d) else px.pie(names=["Vuoto"],values=[1]),use_container_width=True)
+    with b:
         st.subheader("Pratiche per stato")
-        if len(pr):
-            fig = px.bar(pr, x="stato", color="tipo")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Nessuna pratica inserita.")
+        d=q("SELECT stato,COUNT(*) c FROM pratiche GROUP BY stato")
+        st.plotly_chart(px.bar(d,x="stato",y="c") if len(d) else px.bar(x=["Vuoto"],y=[0]),use_container_width=True)
 
-def page_note():
-    st.header("NOTA")
-    tab1, tab2, tab3 = st.tabs(["Nuova Nota", "Elenco Note", "PDF"])
-    with tab1:
-        now = datetime.now()
-        col1,col2 = st.columns(2)
-        data = col1.date_input("Data", now.date())
-        ora = col2.time_input("Ora", now.time().replace(second=0, microsecond=0))
-        mt = st.selectbox("Mittente - categoria", ["Collaboratore","Gestore"])
-        mitt = persona_select("Mittente", mt)
-        dt = st.selectbox("Destinatario - categoria", ["Collaboratore","Gestore"])
-        dest = persona_select("Destinatario", dt)
-        azienda = st.text_input("Azienda")
-        banca = st.text_input("Banca")
-        importo = st.text_input("Importo")
-        strumento = st.selectbox("Strumento", ["CHIRO","FACTORING","INVOICE","MUTUO","PRESTITO","CROWD"])
-        richiesta = st.text_area("Richiesta / descrizione nota", height=160)
-        stato = st.selectbox("Stato", ["EVASA","INEVASA","IN ATTESA"])
-        if st.button("Salva Nota", use_container_width=True):
-            execute("""INSERT INTO note(data,ora,mittente_tipo,mittente,destinatario_tipo,destinatario,azienda,banca,importo,strumento,richiesta,stato,created_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (str(data),str(ora),mt,mitt,dt,dest,azienda,banca,importo,strumento,richiesta,stato,datetime.now().isoformat()))
-            st.success("Nota salvata.")
-    with tab2:
-        df=q("SELECT * FROM note ORDER BY id DESC")
-        st.dataframe(df, use_container_width=True)
-    with tab3:
+def page_nota():
+    hero("NOTA","Gestione note operative, stati, allegati e PDF.")
+    t1,t2,t3=st.tabs(["Nuova Nota","Elenco / Ricerca","PDF"])
+    with t1:
+        c1,c2=st.columns(2); data=c1.date_input("Data",date.today()); ora=c2.time_input("Ora",datetime.now().time().replace(second=0,microsecond=0))
+        mt=st.selectbox("Mittente categoria",["Collaboratore","Gestore"]); mitt=st.selectbox("Mittente",people(mt) or [""])
+        dt=st.selectbox("Destinatario categoria",["Collaboratore","Gestore"]); dest=st.selectbox("Destinatario",people(dt) or [""])
+        az=st.selectbox("Azienda",[""]+azs()); banca=st.text_input("Banca"); imp=st.text_input("Importo")
+        strum=st.selectbox("Strumento",["CHIRO","FACTORING","INVOICE","MUTUO","PRESTITO","CROWD"]); rich=st.text_area("Richiesta",height=160)
+        stato=st.selectbox("Stato",["EVASA","INEVASA","IN ATTESA"]); f=st.file_uploader("Allegato")
+        if st.button("Salva Nota",use_container_width=True):
+            path=save_file(f,"note") if f else ""
+            x("INSERT INTO note(data,ora,mittente_tipo,mittente,destinatario_tipo,destinatario,azienda,banca,importo,strumento,richiesta,stato,allegato,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(str(data),str(ora),mt,mitt,dt,dest,az,banca,money(imp),strum,rich,stato,path,datetime.now().isoformat()))
+            log("NOTA","creata",az); st.success("Nota salvata.")
+    with t2:
+        d=q("SELECT * FROM note ORDER BY id DESC"); r=st.text_input("Ricerca")
+        if r and len(d): d=d[d.astype(str).apply(lambda row: row.str.contains(r,case=False,na=False).any(),axis=1)]
+        st.dataframe(d,use_container_width=True)
+    with t3:
         if st.button("Genera PDF Note"):
-            path=save_pdf("Elenco Note", [("Note", q("SELECT data,ora,mittente,destinatario,azienda,banca,importo,strumento,stato FROM note ORDER BY id DESC"))], "elenco_note.pdf")
-            st.download_button("Scarica PDF", path.read_bytes(), file_name=path.name)
+            p=pdf("Report Note FinancePlus",[("Note",q("SELECT data,ora,mittente,destinatario,azienda,banca,importo,strumento,stato,richiesta FROM note"))],"report_note.pdf")
+            st.download_button("Scarica PDF",p.read_bytes(),file_name=p.name)
 
 def page_anagrafica():
-    st.header("ANAGRAFICA")
-    tab1,tab2,tab3,tab4=st.tabs(["Collaboratore","Gestore","Azienda","Elenchi"])
-    for tab, tipo in [(tab1,"Collaboratore"),(tab2,"Gestore")]:
+    hero("Anagrafica","Collaboratori, gestori, aziende e schede cliente.")
+    t1,t2,t3,t4=st.tabs(["Collaboratore","Gestore","Azienda","Elenchi"])
+    for tab,tipo in [(t1,"Collaboratore"),(t2,"Gestore")]:
         with tab:
-            nome=st.text_input(f"Nome {tipo}", key=f"nome_{tipo}")
-            cognome=st.text_input(f"Cognome {tipo}", key=f"cognome_{tipo}")
-            mail=st.text_input(f"Mail {tipo}", key=f"mail_{tipo}")
-            cell=st.text_input(f"Cell {tipo}", key=f"cell_{tipo}")
-            if st.button(f"Salva {tipo}", key=f"salva_{tipo}"):
-                execute("INSERT INTO persone(tipo,nome,cognome,mail,cell,created_at) VALUES(?,?,?,?,?,?)",(tipo,nome,cognome,mail,cell,datetime.now().isoformat()))
-                st.success(f"{tipo} salvato.")
-    with tab3:
-        uploaded=st.file_uploader("Inserisci Visura/Report PDF", type=["pdf"])
-        rag=st.text_input("Ragione sociale")
-        piva=st.text_input("P.IVA")
-        amm=st.text_input("Nome Cognome Amministratore")
-        sede=st.text_input("Sede legale")
-        pec=st.text_input("PEC")
-        collabs=q("SELECT nome || ' ' || cognome AS nominativo FROM persone WHERE tipo='Collaboratore'")
-        coll=st.selectbox("Collaboratore", collabs["nominativo"].tolist() if len(collabs) else [""])
-        if uploaded:
-            saved=UPLOAD_DIR / uploaded.name
-            saved.write_bytes(uploaded.getvalue())
-            st.info("PDF caricato. L'estrazione OCR avanzata sarà nella v2; ora puoi completare i campi manualmente.")
+            nome=st.text_input("Nome",key=tipo+"n"); cog=st.text_input("Cognome",key=tipo+"c"); mail=st.text_input("Mail",key=tipo+"m"); cell=st.text_input("Cell",key=tipo+"cell"); note=st.text_area("Note",key=tipo+"note")
+            if st.button("Salva "+tipo,key=tipo+"btn"):
+                x("INSERT INTO anagrafiche(tipo,nome,cognome,mail,cell,note,created_at) VALUES(?,?,?,?,?,?,?)",(tipo,nome,cog,mail,cell,note,datetime.now().isoformat()))
+                st.success(tipo+" salvato.")
+    with t3:
+        f=st.file_uploader("Inserisci Visura/Report PDF",type=["pdf"])
+        rag=st.text_input("Ragione sociale"); piva=st.text_input("P.IVA"); cf=st.text_input("CF"); amm=st.text_input("Amministratore")
+        sede=st.text_input("Sede"); pec=st.text_input("PEC"); settore=st.text_input("Settore"); coll=st.selectbox("Collaboratore",people("Collaboratore") or [""]); note=st.text_area("Note azienda")
+        if f: save_file(f,"visure"); st.info("OCR automatico previsto in v2.1. Ora compila i campi manualmente.")
         if st.button("Salva Azienda"):
-            execute("INSERT INTO aziende(ragione_sociale,piva,amministratore,sede,pec,collaboratore,created_at) VALUES(?,?,?,?,?,?,?)",(rag,piva,amm,sede,pec,coll,datetime.now().isoformat()))
+            x("INSERT INTO aziende(ragione_sociale,piva,cf,amministratore,sede,pec,collaboratore,settore,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",(rag,piva,cf,amm,sede,pec,coll,settore,note,datetime.now().isoformat()))
             st.success("Azienda salvata.")
-    with tab4:
-        st.subheader("Collaboratori e Gestori")
-        st.dataframe(q("SELECT tipo,nome,cognome,mail,cell FROM persone ORDER BY tipo,cognome"), use_container_width=True)
-        st.subheader("Aziende")
-        st.dataframe(q("SELECT ragione_sociale,piva,amministratore,sede,pec,collaboratore FROM aziende ORDER BY ragione_sociale"), use_container_width=True)
-        if st.button("PDF Anagrafiche"):
-            path=save_pdf("Anagrafiche FinancePlus", [("Persone",q("SELECT tipo,nome,cognome,mail,cell FROM persone")),("Aziende",q("SELECT ragione_sociale,piva,amministratore,sede,pec,collaboratore FROM aziende"))], "anagrafiche.pdf")
-            st.download_button("Scarica PDF", path.read_bytes(), file_name=path.name)
+    with t4:
+        st.dataframe(q("SELECT * FROM anagrafiche"),use_container_width=True); st.dataframe(q("SELECT * FROM aziende"),use_container_width=True)
 
 def page_finance():
-    st.header("FINANCE - Pratiche")
-    tab1,tab2=st.tabs(["Nuova Pratica","Elenco"])
-    with tab1:
-        az=st.selectbox("Azienda", aziende_options() or [""])
-        tipo=st.selectbox("Tipo pratica", ["MUTUO","CHIROGRAFARIO","FACTORING","INVOICE TRADING","CROWD","PRESTITO"])
-        banca=st.text_input("Banca / Istituto")
-        importo=st.text_input("Importo richiesto")
-        stato=st.selectbox("Stato avanzamento", ["NUOVA","ISTRUTTORIA","DOCUMENTI RICHIESTI","DELIBERATA","RESPINTA","EROGATA"])
-        descrizione=st.text_area("Descrizione", height=130)
+    hero("Finance","Gestione pratiche finanziarie e stato avanzamento.")
+    t1,t2,t3=st.tabs(["Nuova Pratica","Elenco","PDF"])
+    with t1:
+        az=st.selectbox("Azienda",[""]+azs()); strum=st.selectbox("Strumento",["MUTUO","CHIROGRAFARIO","FACTORING","INVOICE TRADING","CROWD","PRESTITO"])
+        banca=st.text_input("Banca"); imp=st.text_input("Importo"); durata=st.text_input("Durata")
+        stato=st.selectbox("Stato",["NUOVA","ISTRUTTORIA","DOCUMENTI RICHIESTI","DELIBERATA","RESPINTA","EROGATA"]); priorita=st.selectbox("Priorità",["ALTA","MEDIA","BASSA"]); desc=st.text_area("Descrizione")
         if st.button("Salva Pratica"):
-            execute("INSERT INTO pratiche(azienda,tipo,banca,importo,stato,descrizione,created_at) VALUES(?,?,?,?,?,?,?)",(az,tipo,banca,importo,stato,descrizione,datetime.now().isoformat()))
+            x("INSERT INTO pratiche(azienda,strumento,banca,importo,durata,stato,priorita,descrizione,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(az,strum,banca,money(imp),durata,stato,priorita,desc,datetime.now().isoformat()))
             st.success("Pratica salvata.")
-    with tab2:
-        st.dataframe(q("SELECT * FROM pratiche ORDER BY id DESC"), use_container_width=True)
+    with t2: st.dataframe(q("SELECT * FROM pratiche ORDER BY id DESC"),use_container_width=True)
+    with t3:
+        if st.button("PDF Pratiche"):
+            p=pdf("Report Pratiche",[("Pratiche",q("SELECT azienda,strumento,banca,importo,durata,stato,priorita,descrizione FROM pratiche"))],"report_pratiche.pdf")
+            st.download_button("Scarica PDF",p.read_bytes(),file_name=p.name)
 
 def page_docs():
-    st.header("DOCS - Archivio Documentale")
-    az=st.selectbox("Azienda", aziende_options() or [""])
-    cat=st.selectbox("Categoria", ["VISURA","BILANCIO","CENTRALE RISCHI","REPORT","CONTRATTO","IDENTITA","ALTRO"])
-    file=st.file_uploader("Carica documento", type=["pdf","docx","xlsx","csv","png","jpg","jpeg"])
-    note=st.text_area("Note documento")
+    hero("Docs","Archivio documentale cloud-ready.")
+    az=st.selectbox("Azienda",[""]+azs()); cat=st.selectbox("Categoria",["VISURA","BILANCIO","CENTRALE RISCHI","ESTRATTO CONTO","CONTRATTO","REPORT","IDENTITA","ALTRO"])
+    f=st.file_uploader("Carica documento"); desc=st.text_area("Descrizione")
     if st.button("Salva Documento"):
-        if file:
-            folder=UPLOAD_DIR / re_safe(az or "Senza_Azienda")
-            folder.mkdir(exist_ok=True, parents=True)
-            path=folder/file.name
-            path.write_bytes(file.getvalue())
-            execute("INSERT INTO documenti(azienda,categoria,filename,path,note,created_at) VALUES(?,?,?,?,?,?)",(az,cat,file.name,str(path),note,datetime.now().isoformat()))
-            st.success("Documento salvato.")
-        else:
-            st.warning("Caricare un file.")
-    st.dataframe(q("SELECT azienda,categoria,filename,note,created_at FROM documenti ORDER BY id DESC"), use_container_width=True)
-
-def re_safe(s):
-    return "".join(c if c.isalnum() or c in (" ","_","-") else "_" for c in s).strip().replace(" ","_")
+        if f:
+            path=save_file(f,safe(az)); x("INSERT INTO documenti(azienda,categoria,filename,path,descrizione,created_at) VALUES(?,?,?,?,?,?)",(az,cat,f.name,path,desc,datetime.now().isoformat())); st.success("Documento salvato.")
+        else: st.warning("Carica un documento.")
+    st.dataframe(q("SELECT azienda,categoria,filename,descrizione,created_at FROM documenti"),use_container_width=True)
 
 def page_calendar():
-    st.header("CALENDAR - Agenda")
-    tab1,tab2,tab3=st.tabs(["Nuova Video Call","Nuovo Appuntamento","Calendario"])
-    with tab1:
-        tipo=st.selectbox("Tipo Video Call", ["PRATICA","AGGIORNAMENTO"])
-        data=st.date_input("Data", date.today(), key="vc_data")
-        ora=st.time_input("Ora", datetime.now().time().replace(second=0,microsecond=0), key="vc_ora")
-        org_t=st.selectbox("Organizzatore categoria", ["Collaboratore","Gestore"], key="vc_org_t")
-        org=persona_select("Organizzatore", org_t)
-        richiesta=""
-        dest_t=dest=azienda=banca=importo=strumento=luogo=""
-        if tipo=="PRATICA":
-            dest_t=st.selectbox("Destinatario categoria", ["Collaboratore","Gestore"], key="vc_dest_t")
-            dest=persona_select("Destinatario", dest_t)
-            azienda=st.selectbox("Azienda", aziende_options() or [""])
-            banca=st.text_input("Banca")
-            importo=st.text_input("Importo")
-            strumento=st.selectbox("Strumento", ["CHIRO","FACTORING","INVOICE","MUTUO","PRESTITO","CROWD"])
-            richiesta=st.text_area("Richiesta", height=120)
-        else:
-            richiesta=st.text_area("Oggetto aggiornamento", height=120)
-        if st.button("Salva Video Call"):
-            execute("INSERT INTO eventi(categoria,data,ora,organizzatore_tipo,organizzatore,destinatario_tipo,destinatario,luogo,azienda,banca,importo,strumento,richiesta,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    ("VIDEO CALL - "+tipo,str(data),str(ora),org_t,org,dest_t,dest,luogo,azienda,banca,importo,strumento,richiesta,datetime.now().isoformat()))
-            st.success("Video Call salvata.")
-    with tab2:
-        data=st.date_input("Data", date.today(), key="ap_data")
-        ora=st.time_input("Ora", datetime.now().time().replace(second=0,microsecond=0), key="ap_ora")
-        org_t=st.selectbox("Organizzatore categoria", ["Collaboratore","Gestore"], key="ap_org_t")
-        org=persona_select("Organizzatore", org_t)
-        dest_t=st.selectbox("Destinatario categoria", ["Collaboratore","Gestore"], key="ap_dest_t")
-        dest=persona_select("Destinatario", dest_t)
-        luogo=st.text_input("Luogo")
-        azienda=st.selectbox("Azienda", aziende_options() or [""], key="ap_az")
-        banca=st.text_input("Banca", key="ap_banca")
-        importo=st.text_input("Importo", key="ap_imp")
-        strumento=st.selectbox("Strumento", ["CHIRO","FACTORING","INVOICE","MUTUO","PRESTITO","CROWD"], key="ap_str")
-        richiesta=st.text_area("Richiesta", height=120, key="ap_rich")
-        if st.button("Salva Appuntamento"):
-            execute("INSERT INTO eventi(categoria,data,ora,organizzatore_tipo,organizzatore,destinatario_tipo,destinatario,luogo,azienda,banca,importo,strumento,richiesta,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    ("APPUNTAMENTO",str(data),str(ora),org_t,org,dest_t,dest,luogo,azienda,banca,importo,strumento,richiesta,datetime.now().isoformat()))
-            st.success("Appuntamento salvato.")
-    with tab3:
-        df=q("SELECT categoria,data,ora,organizzatore,destinatario,luogo,azienda,banca,importo,strumento,richiesta FROM eventi ORDER BY data DESC, ora DESC")
-        st.dataframe(df, use_container_width=True)
-        if st.button("PDF Calendario"):
-            path=save_pdf("Elenco Video Call e Appuntamenti", [("Agenda",df)], "calendario_eventi.pdf")
-            st.download_button("Scarica PDF", path.read_bytes(), file_name=path.name)
+    hero("Calendar","Call, video call, appuntamenti e agenda.")
+    t1,t2=st.tabs(["Nuovo Evento","Elenco"])
+    with t1:
+        tipo=st.selectbox("Tipo",["VIDEO CALL - PRATICA","VIDEO CALL - AGGIORNAMENTO","APPUNTAMENTO"])
+        data=st.date_input("Data",date.today()); ora=st.time_input("Ora",datetime.now().time().replace(second=0,microsecond=0))
+        ot=st.selectbox("Organizzatore categoria",["Collaboratore","Gestore"]); org=st.selectbox("Organizzatore",people(ot) or [""])
+        dt=st.selectbox("Destinatario categoria",["Collaboratore","Gestore"]); dest=st.selectbox("Destinatario",people(dt) or [""])
+        luogo=st.text_input("Luogo"); az=st.selectbox("Azienda",[""]+azs()); banca=st.text_input("Banca"); imp=st.text_input("Importo")
+        strum=st.selectbox("Strumento",["CHIRO","FACTORING","INVOICE","MUTUO","PRESTITO","CROWD"]); rich=st.text_area("Richiesta")
+        if st.button("Salva Evento"):
+            x("INSERT INTO eventi(tipo,data,ora,organizzatore_tipo,organizzatore,destinatario_tipo,destinatario,luogo,azienda,banca,importo,strumento,richiesta,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(tipo,str(data),str(ora),ot,org,dt,dest,luogo,az,banca,money(imp),strum,rich,datetime.now().isoformat()))
+            st.success("Evento salvato.")
+    with t2: st.dataframe(q("SELECT * FROM eventi ORDER BY data DESC, ora DESC"),use_container_width=True)
 
 def page_report():
-    st.header("REPORT")
-    az=st.selectbox("Seleziona azienda", ["Tutte"] + aziende_options())
-    if st.button("Genera Report FinancePlus"):
-        filtro="" if az=="Tutte" else " WHERE azienda=?"
-        params=() if az=="Tutte" else (az,)
-        sections=[
-            ("Note", q("SELECT data,mittente,destinatario,azienda,banca,importo,strumento,stato FROM note"+filtro+" ORDER BY id DESC", params)),
-            ("Pratiche", q("SELECT azienda,tipo,banca,importo,stato,descrizione FROM pratiche"+filtro+" ORDER BY id DESC", params)),
-            ("Eventi", q("SELECT categoria,data,ora,organizzatore,destinatario,azienda,banca,importo,strumento FROM eventi"+filtro+" ORDER BY data DESC", params)),
-            ("Documenti", q("SELECT azienda,categoria,filename,note FROM documenti"+filtro+" ORDER BY id DESC", params)),
-        ]
-        path=save_pdf("Report NOTA FinancePlus", sections, "report_financeplus.pdf")
-        st.success("Report generato.")
-        st.download_button("Scarica Report PDF", path.read_bytes(), file_name=path.name)
+    hero("Report","PDF professionali con logo FinancePlus.")
+    az=st.selectbox("Azienda",["Tutte"]+azs())
+    if st.button("Genera Report Completo"):
+        wh="" if az=="Tutte" else " WHERE azienda=?"; pp=() if az=="Tutte" else (az,)
+        p=pdf("Report Completo FinancePlus",[("Note",q("SELECT data,mittente,destinatario,azienda,banca,importo,strumento,stato FROM note"+wh,pp)),("Pratiche",q("SELECT azienda,strumento,banca,importo,durata,stato,priorita FROM pratiche"+wh,pp)),("Documenti",q("SELECT azienda,categoria,filename,descrizione FROM documenti"+wh,pp)),("Eventi",q("SELECT tipo,data,ora,organizzatore,destinatario,azienda,banca,importo,strumento FROM eventi"+wh,pp))],"report_completo_financeplus.pdf")
+        st.download_button("Scarica PDF",p.read_bytes(),file_name=p.name)
 
 def page_ai():
-    st.header("AI - Assistente FinancePlus")
-    st.info("Modulo predisposto. Nella v2 sarà collegato a OCR, analisi visure, bilanci e Centrale Rischi.")
-    txt=st.text_area("Testo nota o pratica da sintetizzare")
-    if st.button("Genera bozza nota"):
-        st.write("Bozza:")
-        st.success(f"Nota operativa: {txt[:500]}")
+    hero("AI","Modulo assistente intelligente predisposto.")
+    st.info("La v2.0 include il contenitore AI. La v2.1 collegherà OCR e analisi automatica di Visure, Bilanci e Centrale Rischi.")
+    txt=st.text_area("Incolla testo pratica/documento")
+    if st.button("Crea bozza nota"): st.success("Sintesi operativa: "+(txt[:900] if txt else "inserire testo."))
 
 def page_drive():
-    st.header("Google Drive")
-    st.info("In questa v1 è predisposta la struttura. Per la sincronizzazione reale servono credenziali Google OAuth / Service Account.")
-    structure = """
-FinancePlus_360
-- Clienti
-- Aziende
-- Pratiche
-- Visure
-- Bilanci
-- Centrale_Rischi
-- Report
-- Note
-- Backup
-- Manuali
-"""
-    st.code(structure)
-    st.write("Cartella Drive indicata:")
+    hero("Google Drive","Struttura cloud e backup.")
     st.code("https://drive.google.com/drive/folders/1PMMcslCfxkTrxEenal0fKuc39njN_yfv")
+    st.code("FinancePlus_360\\n├── Clienti\\n├── Aziende\\n├── Pratiche\\n├── Visure\\n├── Bilanci\\n├── Centrale_Rischi\\n├── Report\\n├── Note\\n├── Backup\\n└── Manuali")
+    st.warning("Sincronizzazione reale in v2.1 con credenziali Google.")
 
 def page_manuale():
-    st.header("Manuale Integrato")
-    st.write("Manuali PDF e guide operative del progetto.")
-    pdfs=list(MANUAL_DIR.glob("*.pdf"))+list(Path(".").glob("*.pdf"))
-    if pdfs:
-        for p in pdfs:
-            st.download_button(f"Scarica {p.name}", p.read_bytes(), file_name=p.name)
-    else:
-        st.info("Caricare i manuali PDF nella cartella manuali/.")
+    hero("Manuale Integrato","Guide PDF e assistenza interna.")
+    for p in MANUALI.glob("*.pdf"):
+        st.download_button("Scarica "+p.name,p.read_bytes(),file_name=p.name)
 
-if "auth" not in st.session_state:
-    st.session_state["auth"] = False
-if not st.session_state["auth"]:
-    login()
-    st.stop()
+def page_admin():
+    hero("Admin","Utenti, backup e manutenzione.")
+    t1,t2=st.tabs(["Utenti","Backup"])
+    with t1:
+        st.dataframe(q("SELECT id,username,ruolo,nome,attivo FROM utenti"),use_container_width=True)
+        u=st.text_input("Username"); p=st.text_input("Password",type="password"); ruolo=st.selectbox("Ruolo",["Admin","Gestore","Collaboratore"]); nome=st.text_input("Nome")
+        if st.button("Crea utente"): x("INSERT INTO utenti(username,password,ruolo,nome) VALUES(?,?,?,?)",(u,p,ruolo,nome)); st.success("Utente creato.")
+    with t2:
+        if DB.exists(): st.download_button("Scarica backup database",DB.read_bytes(),file_name="financeplus_360_v2_backup.db")
 
+if "auth" not in st.session_state: st.session_state.auth=False
+if not st.session_state.auth: login(); st.stop()
 with st.sidebar:
-    st.markdown(logo_html(140), unsafe_allow_html=True)
+    st.markdown(logo(150),unsafe_allow_html=True)
     st.markdown("### FinancePlus 360 Enterprise")
-    choice = st.radio("Menu", ["Dashboard","NOTA","ANAGRAFICA","FINANCE","DOCS","REPORT","CALENDAR","AI","GOOGLE DRIVE","MANUALE"], label_visibility="collapsed")
+    st.caption("v2.0")
+    menu=st.radio("Menu",["Dashboard","NOTA","Anagrafica","Finance","Docs","Report","Calendar","AI","Google Drive","Manuale","Admin"],label_visibility="collapsed")
     st.divider()
-    if st.button("Logout"):
-        st.session_state["auth"] = False
-        st.rerun()
-
-if choice=="Dashboard": dashboard()
-elif choice=="NOTA": page_note()
-elif choice=="ANAGRAFICA": page_anagrafica()
-elif choice=="FINANCE": page_finance()
-elif choice=="DOCS": page_docs()
-elif choice=="REPORT": page_report()
-elif choice=="CALENDAR": page_calendar()
-elif choice=="AI": page_ai()
-elif choice=="GOOGLE DRIVE": page_drive()
-elif choice=="MANUALE": page_manuale()
+    if st.button("Logout"): st.session_state.auth=False; st.rerun()
+{"Dashboard":dashboard,"NOTA":page_nota,"Anagrafica":page_anagrafica,"Finance":page_finance,"Docs":page_docs,"Report":page_report,"Calendar":page_calendar,"AI":page_ai,"Google Drive":page_drive,"Manuale":page_manuale,"Admin":page_admin}[menu]()

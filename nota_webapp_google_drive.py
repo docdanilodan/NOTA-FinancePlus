@@ -13,7 +13,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 
-APP_VERSION="TOP v4.0 SMART IMPORT"
+APP_VERSION="TOP v5.1 MAIL FIX"
 DATA=Path("data"); UPLOADS=Path("uploads"); EXPORTS=Path("exports"); STATIC=Path("static"); MANUALS=Path("manuals"); MAILDIR=Path("mail")
 for p in [DATA,UPLOADS,EXPORTS,STATIC,MANUALS,MAILDIR]: p.mkdir(parents=True,exist_ok=True)
 DB=DATA/"financeplus_360_v4.db"
@@ -208,8 +208,11 @@ def download_mail_imap(host, port, use_ssl, account_email, password, mailbox, se
     M.login(account_email, password)
     M.select(mailbox or "INBOX")
 
-    before = end_date + pd.Timedelta(days=1)
-    criteria = f'(SINCE {imap_date(start_date)} BEFORE {imap_date(before.date())}'
+    before_date = end_date + pd.Timedelta(days=1)
+    if hasattr(before_date, "date"):
+        before_date = before_date.date()
+
+    criteria = f'(SINCE {imap_date(start_date)} BEFORE {imap_date(before_date)}'
     if sender_filter:
         criteria += f' FROM "{sender_filter}"'
     criteria += ')'
@@ -217,7 +220,7 @@ def download_mail_imap(host, port, use_ssl, account_email, password, mailbox, se
     status, data = M.search(None, criteria)
     if status != "OK":
         # fallback senza filtro mittente se il server IMAP non accetta il criterio composto
-        status, data = M.search(None, f'(SINCE {imap_date(start_date)} BEFORE {imap_date(before.date())})')
+        status, data = M.search(None, f'(SINCE {imap_date(start_date)} BEFORE {imap_date(before_date)})')
     ids = data[0].split() if data and data[0] else []
 
     x("INSERT INTO mail_downloads(account_email,sender_filter,date_from,date_to,folder_path,messages_count,attachments_count,created_at) VALUES(?,?,?,?,?,?,?,?)",

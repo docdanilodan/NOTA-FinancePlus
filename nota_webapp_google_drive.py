@@ -1,6 +1,8 @@
 
-import sqlite3, base64, re, io
+import sqlite3, base64, re, io, imaplib, email, html
 from pathlib import Path
+from email.header import decode_header, make_header
+from email.utils import parsedate_to_datetime, parseaddr
 from datetime import datetime, date
 import pandas as pd
 import streamlit as st
@@ -12,8 +14,8 @@ from reportlab.lib import colors
 from reportlab.lib.units import cm
 
 APP_VERSION="TOP v4.0 SMART IMPORT"
-DATA=Path("data"); UPLOADS=Path("uploads"); EXPORTS=Path("exports"); STATIC=Path("static"); MANUALS=Path("manuals")
-for p in [DATA,UPLOADS,EXPORTS,STATIC,MANUALS]: p.mkdir(parents=True,exist_ok=True)
+DATA=Path("data"); UPLOADS=Path("uploads"); EXPORTS=Path("exports"); STATIC=Path("static"); MANUALS=Path("manuals"); MAILDIR=Path("mail")
+for p in [DATA,UPLOADS,EXPORTS,STATIC,MANUALS,MAILDIR]: p.mkdir(parents=True,exist_ok=True)
 DB=DATA/"financeplus_360_v4.db"
 st.set_page_config(page_title="FinancePlus 360 Enterprise", page_icon="static/favicon.png", layout="wide")
 st.markdown("""<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="FinancePlus"><link rel="manifest" href="static/manifest.json"><link rel="apple-touch-icon" href="static/apple-touch-icon.png"><link rel="icon" type="image/png" href="static/favicon.png"><style>.stApp{background:linear-gradient(180deg,#F5F8FC 0%,#EDF3FA 100%)}section[data-testid="stSidebar"]{background:linear-gradient(180deg,#071F3D,#0B2E5B)}section[data-testid="stSidebar"] *{color:white!important}.fp-hero{background:linear-gradient(135deg,#0B2E5B,#123E73 70%,#B87333);padding:24px;border-radius:22px;color:white;box-shadow:0 10px 30px rgba(11,46,91,.22)}.fp-card{background:white;border:1px solid #D8E2EE;border-radius:20px;padding:18px;box-shadow:0 8px 24px rgba(10,35,66,.08)}.fp-metric{background:white;border-radius:18px;padding:18px;border-left:6px solid #B87333;box-shadow:0 8px 22px rgba(10,35,66,.08)}.fp-metric h2{color:#0B2E5B;margin:0;font-size:34px}.fp-metric p{color:#5E7187;margin:0;font-weight:700}</style>""",unsafe_allow_html=True)
@@ -29,6 +31,8 @@ def init():
     cur.execute("CREATE TABLE IF NOT EXISTS documenti(id INTEGER PRIMARY KEY AUTOINCREMENT,azienda TEXT,categoria TEXT,filename TEXT,path TEXT,descrizione TEXT,testo_estratto TEXT,created_at TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS eventi(id INTEGER PRIMARY KEY AUTOINCREMENT,tipo TEXT,data TEXT,ora TEXT,organizzatore_tipo TEXT,organizzatore TEXT,destinatario_tipo TEXT,destinatario TEXT,luogo TEXT,azienda TEXT,banca TEXT,importo REAL,strumento TEXT,richiesta TEXT,created_at TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,modulo TEXT,azione TEXT,dettaglio TEXT,created_at TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS mail_downloads(id INTEGER PRIMARY KEY AUTOINCREMENT,account_email TEXT,sender_filter TEXT,date_from TEXT,date_to TEXT,folder_path TEXT,messages_count INTEGER,attachments_count INTEGER,created_at TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS mail_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,download_id INTEGER,account_email TEXT,mittente TEXT,destinatario TEXT,data TEXT,ora TEXT,oggetto TEXT,contenuto TEXT,allegati TEXT,folder_path TEXT,collaboratore TEXT,azienda TEXT,created_at TEXT)")
     cur.execute("INSERT OR IGNORE INTO utenti(username,password,ruolo,nome) VALUES('admin','admin123','Admin','Amministratore')")
     c.commit();c.close()
 def q(sql,p=()): c=con();d=pd.read_sql_query(sql,c,params=p);c.close();return d
@@ -116,10 +120,253 @@ def login():
             else: st.error("Credenziali non valide")
         st.info("Accesso iniziale: admin / admin123"); st.markdown("</div>",unsafe_allow_html=True)
 
+
+def clean_mail_text(s):
+    s = s or ""
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = html.unescape(s)
+    return re.sub(r"\s+", " ", s).strip()
+
+def decode_mime(s):
+    try:
+        return str(make_header(decode_header(s or ""))).strip()
+    except Exception:
+        return str(s or "").strip()
+
+def imap_date(d):
+    months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    return f"{d.day:02d}-{months[d.month-1]}-{d.year}"
+
+def folder_period(start, end):
+    return f"{start.strftime('%d-%m-%Y')}_{end.strftime('%d-%m-%Y')}"
+
+def next_mail_start(account_email="", sender_filter=""):
+    try:
+        d = q("SELECT MAX(date_to) ultimo FROM mail_downloads WHERE account_email=? AND sender_filter=?", (account_email, sender_filter))
+        val = d.iloc[0]["ultimo"] if len(d) else None
+        if val:
+            return (pd.to_datetime(val).date() + pd.Timedelta(days=1)).date()
+    except Exception:
+        pass
+    return date(2026,1,1)
+
+def get_body(msg):
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = str(part.get_content_disposition() or "")
+            if disp == "attachment":
+                continue
+            if ctype == "text/plain":
+                try:
+                    body += part.get_content() + "\n"
+                except Exception:
+                    pass
+        if not body:
+            for part in msg.walk():
+                if part.get_content_type() == "text/html":
+                    try:
+                        body += clean_mail_text(part.get_content()) + "\n"
+                    except Exception:
+                        pass
+    else:
+        try:
+            body = msg.get_content()
+        except Exception:
+            body = ""
+    return clean_mail_text(body)
+
+def detect_collaboratore(text):
+    text_low = (text or "").lower()
+    rows = q("SELECT nome,cognome,mail FROM anagrafiche WHERE tipo='Collaboratore'")
+    for _,r in rows.iterrows():
+        full = f"{r.get('nome','')} {r.get('cognome','')}".strip()
+        mail = str(r.get("mail","") or "")
+        if (full and full.lower() in text_low) or (mail and mail.lower() in text_low):
+            return full
+    return ""
+
+def detect_azienda(text):
+    text_low = (text or "").lower()
+    rows = q("SELECT ragione_sociale,piva,cf FROM aziende")
+    for _,r in rows.iterrows():
+        rag = str(r.get("ragione_sociale","") or "")
+        piva = str(r.get("piva","") or "")
+        cf = str(r.get("cf","") or "")
+        if (rag and rag.lower() in text_low) or (piva and piva in text_low) or (cf and cf.lower() in text_low):
+            return rag
+    return ""
+
+def download_mail_imap(host, port, use_ssl, account_email, password, mailbox, sender_filter, start_date, end_date):
+    base_folder = MAILDIR / folder_period(start_date, end_date)
+    base_folder.mkdir(parents=True, exist_ok=True)
+    if use_ssl:
+        M = imaplib.IMAP4_SSL(host, int(port))
+    else:
+        M = imaplib.IMAP4(host, int(port))
+    M.login(account_email, password)
+    M.select(mailbox or "INBOX")
+
+    before = end_date + pd.Timedelta(days=1)
+    criteria = f'(SINCE {imap_date(start_date)} BEFORE {imap_date(before.date())}'
+    if sender_filter:
+        criteria += f' FROM "{sender_filter}"'
+    criteria += ')'
+
+    status, data = M.search(None, criteria)
+    if status != "OK":
+        # fallback senza filtro mittente se il server IMAP non accetta il criterio composto
+        status, data = M.search(None, f'(SINCE {imap_date(start_date)} BEFORE {imap_date(before.date())})')
+    ids = data[0].split() if data and data[0] else []
+
+    x("INSERT INTO mail_downloads(account_email,sender_filter,date_from,date_to,folder_path,messages_count,attachments_count,created_at) VALUES(?,?,?,?,?,?,?,?)",
+      (account_email, sender_filter, str(start_date), str(end_date), str(base_folder), 0, 0, datetime.now().isoformat()))
+    download_id = q("SELECT MAX(id) id FROM mail_downloads").iloc[0]["id"]
+
+    msg_count = 0
+    att_count = 0
+
+    for num in ids:
+        status, msg_data = M.fetch(num, "(RFC822)")
+        if status != "OK" or not msg_data:
+            continue
+        raw = msg_data[0][1]
+        msg = email.message_from_bytes(raw, policy=email.policy.default)
+
+        mittente_nome, mittente_mail = parseaddr(str(msg.get("From","")))
+        destinatario = str(msg.get("To","") or "")
+        oggetto = decode_mime(msg.get("Subject",""))
+        body = get_body(msg)
+        try:
+            dt = parsedate_to_datetime(msg.get("Date"))
+            dmail = dt.date().isoformat()
+            omail = dt.strftime("%H:%M")
+        except Exception:
+            dmail = ""
+            omail = ""
+
+        sender_folder_name = safe(mittente_mail or mittente_nome or "mittente_sconosciuto")
+        sender_folder = base_folder / sender_folder_name
+        sender_folder.mkdir(parents=True, exist_ok=True)
+
+        allegati = []
+        for part in msg.iter_attachments():
+            fname = decode_mime(part.get_filename() or "allegato")
+            fname = safe(fname)
+            try:
+                payload = part.get_payload(decode=True)
+                if payload:
+                    out = sender_folder / fname
+                    # evita sovrascrittura
+                    if out.exists():
+                        stem, suffix = out.stem, out.suffix
+                        k = 2
+                        while (sender_folder / f"{stem}_{k}{suffix}").exists():
+                            k += 1
+                        out = sender_folder / f"{stem}_{k}{suffix}"
+                    out.write_bytes(payload)
+                    allegati.append(out.name)
+                    att_count += 1
+            except Exception:
+                pass
+
+        full_text = f"{mittente_mail} {destinatario} {oggetto} {body}"
+        coll = detect_collaboratore(full_text)
+        az = detect_azienda(full_text)
+
+        x("INSERT INTO mail_messages(download_id,account_email,mittente,destinatario,data,ora,oggetto,contenuto,allegati,folder_path,collaboratore,azienda,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          (int(download_id), account_email, mittente_mail or mittente_nome, destinatario, dmail, omail, oggetto, body[:10000], ", ".join(allegati), str(sender_folder), coll, az, datetime.now().isoformat()))
+        msg_count += 1
+
+    x("UPDATE mail_downloads SET messages_count=?, attachments_count=? WHERE id=?", (msg_count, att_count, int(download_id)))
+    M.close()
+    M.logout()
+    log("MAIL", "scarico completato", f"{msg_count} mail, {att_count} allegati")
+    return msg_count, att_count, str(base_folder)
+
+def page_mail():
+    hero("Mail", "Scarico email e allegati, archivio per periodo/mittente e report PDF.")
+    t1,t2,t3,t4 = st.tabs(["Scarica Mail", "R/Mail", "R/Collaboratori", "R/Aziende"])
+
+    with t1:
+        st.subheader("Parametri casella mail")
+        c1,c2 = st.columns(2)
+        host = c1.text_input("Server IMAP", value="imap.gmail.com")
+        port = c2.number_input("Porta", value=993, step=1)
+        use_ssl = st.checkbox("Usa SSL", value=True)
+        account_email = c1.text_input("Email account da cui scaricare")
+        password = c2.text_input("Password / App Password", type="password")
+        mailbox = st.text_input("Cartella IMAP", value="INBOX")
+        sender_filter = st.text_input("Scarica solo mail ricevute da questo mittente", placeholder="esempio@email.it")
+
+        suggested = next_mail_start(account_email, sender_filter) if account_email else date(2026,1,1)
+        c3,c4 = st.columns(2)
+        start = c3.date_input("Data inizio scarico", value=suggested)
+        end = c4.date_input("Data fine scarico", value=date.today())
+
+        st.caption("Le cartelle vengono create in: mail / data_inizio_data_fine / mittente")
+        if st.button("Scarica Mail", use_container_width=True):
+            if not host or not account_email or not password:
+                st.error("Inserisci server IMAP, email account e password/app password.")
+            elif end < start:
+                st.error("La data fine non può essere precedente alla data inizio.")
+            else:
+                with st.spinner("Scarico mail e allegati in corso..."):
+                    try:
+                        n, a, folder = download_mail_imap(host, port, use_ssl, account_email, password, mailbox, sender_filter, start, end)
+                        st.success(f"Scarico completato: {n} mail e {a} allegati.")
+                        st.code(folder)
+                    except Exception as e:
+                        st.error("Errore durante lo scarico mail.")
+                        st.exception(e)
+
+        st.divider()
+        st.subheader("Storico scarichi")
+        st.dataframe(q("SELECT account_email,sender_filter,date_from,date_to,folder_path,messages_count,attachments_count,created_at FROM mail_downloads ORDER BY id DESC"), use_container_width=True)
+
+    with t2:
+        st.subheader("R/Mail - report completo")
+        d = q("SELECT data,ora,mittente,oggetto,contenuto,allegati,folder_path FROM mail_messages ORDER BY data DESC, ora DESC")
+        st.dataframe(d, use_container_width=True)
+        if st.button("Genera PDF R/Mail", use_container_width=True):
+            p = make_pdf("R/Mail - Report mail scaricate", [("Mail scaricate", d)], "R_Mail_report.pdf")
+            st.download_button("Scarica PDF R/Mail", p.read_bytes(), file_name=p.name)
+
+    with t3:
+        st.subheader("R/Collaboratori")
+        collaboratori = people("Collaboratore")
+        coll = st.selectbox("Scegli collaboratore", [""] + collaboratori)
+        if coll:
+            d = q("SELECT data,ora,mittente,oggetto,contenuto,allegati,folder_path FROM mail_messages WHERE collaboratore=? OR contenuto LIKE ? OR oggetto LIKE ? ORDER BY data DESC, ora DESC", (coll, f"%{coll}%", f"%{coll}%"))
+        else:
+            d = pd.DataFrame()
+        st.dataframe(d, use_container_width=True)
+        if len(d) and st.button("Genera PDF R/Collaboratori", use_container_width=True):
+            p = make_pdf(f"R/Collaboratori - {coll}", [("Mail collaboratore", d)], f"R_Collaboratore_{safe(coll)}.pdf")
+            st.download_button("Scarica PDF Collaboratore", p.read_bytes(), file_name=p.name)
+
+    with t4:
+        st.subheader("R/Aziende")
+        aziende = azs()
+        az = st.selectbox("Scegli azienda", [""] + aziende)
+        if az:
+            d = q("SELECT data,ora,mittente,oggetto,contenuto,allegati,folder_path FROM mail_messages WHERE azienda=? OR contenuto LIKE ? OR oggetto LIKE ? ORDER BY data DESC, ora DESC", (az, f"%{az}%", f"%{az}%"))
+        else:
+            d = pd.DataFrame()
+        st.dataframe(d, use_container_width=True)
+        if len(d) and st.button("Genera PDF R/Aziende", use_container_width=True):
+            p = make_pdf(f"R/Aziende - {az}", [("Mail azienda", d)], f"R_Azienda_{safe(az)}.pdf")
+            st.download_button("Scarica PDF Azienda", p.read_bytes(), file_name=p.name)
+
+
 def dashboard():
-    hero("Dashboard Direzionale","KPI, attività, pratiche, documenti e Smart Import.")
-    cols=st.columns(5)
-    for col,(lab,tab) in zip(cols,[("Note","note"),("Aziende","aziende"),("Pratiche","pratiche"),("Documenti","documenti"),("Eventi","eventi")]):
+    hero("Dashboard Direzionale","KPI, attività, pratiche, documenti, mail e Smart Import.")
+    if st.button("Apri Mail", use_container_width=True):
+        st.session_state["main_menu"]="Mail"
+        st.rerun()
+    cols=st.columns(6)
+    for col,(lab,tab) in zip(cols,[("Note","note"),("Aziende","aziende"),("Pratiche","pratiche"),("Documenti","documenti"),("Eventi","eventi"),("Mail","mail_messages")]):
         col.markdown(f"<div class='fp-metric'><p>{lab}</p><h2>{len(q(f'SELECT * FROM {tab}'))}</h2></div>",unsafe_allow_html=True)
     st.divider(); c1,c2=st.columns(2)
     with c1:
@@ -244,7 +491,7 @@ if "auth" not in st.session_state: st.session_state.auth=False
 if not st.session_state.auth: login(); st.stop()
 with st.sidebar:
     st.markdown(logo(150),unsafe_allow_html=True); st.markdown("### FinancePlus 360 Enterprise"); st.caption(APP_VERSION)
-    menu=st.radio("Menu",["Dashboard","Smart Import","NOTA","Anagrafica","Finance","Docs","Report","Calendar","AI","Google Drive","Manuale","Admin"],label_visibility="collapsed")
+    menu=st.radio("Menu",["Dashboard","Mail","Smart Import","NOTA","Anagrafica","Finance","Docs","Report","Calendar","AI","Google Drive","Manuale","Admin"],label_visibility="collapsed", key="main_menu")
     st.divider()
     if st.button("Logout"): st.session_state.auth=False; st.rerun()
-{"Dashboard":dashboard,"Smart Import":smart_import,"NOTA":nota,"Anagrafica":anagrafica,"Finance":finance,"Docs":docs,"Report":report,"Calendar":calendar,"AI":ai,"Google Drive":drive,"Manuale":manual,"Admin":admin}[menu]()
+{"Dashboard":dashboard,"Mail":page_mail,"Smart Import":smart_import,"NOTA":nota,"Anagrafica":anagrafica,"Finance":finance,"Docs":docs,"Report":report,"Calendar":calendar,"AI":ai,"Google Drive":drive,"Manuale":manual,"Admin":admin}[menu]()

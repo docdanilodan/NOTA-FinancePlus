@@ -3,6 +3,8 @@ import sqlite3, base64, re, io, imaplib, email, html
 from pathlib import Path
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime, parseaddr
+from email import policy
+from email.parser import BytesParser
 from datetime import datetime, date
 import pandas as pd
 import streamlit as st
@@ -13,7 +15,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 
-APP_VERSION="TOP v5.1 MAIL FIX"
+APP_VERSION="TOP v5.2 MAIL PARSER FIX"
 DATA=Path("data"); UPLOADS=Path("uploads"); EXPORTS=Path("exports"); STATIC=Path("static"); MANUALS=Path("manuals"); MAILDIR=Path("mail")
 for p in [DATA,UPLOADS,EXPORTS,STATIC,MANUALS,MAILDIR]: p.mkdir(parents=True,exist_ok=True)
 DB=DATA/"financeplus_360_v4.db"
@@ -235,7 +237,7 @@ def download_mail_imap(host, port, use_ssl, account_email, password, mailbox, se
         if status != "OK" or not msg_data:
             continue
         raw = msg_data[0][1]
-        msg = email.message_from_bytes(raw, policy=email.policy.default)
+        msg = BytesParser(policy=policy.default).parsebytes(raw)
 
         mittente_nome, mittente_mail = parseaddr(str(msg.get("From","")))
         destinatario = str(msg.get("To","") or "")

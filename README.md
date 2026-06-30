@@ -1,26 +1,31 @@
-# FinancePlus 360 TOP v5.2 MAIL PARSER FIX
+# FinancePlus 360 TOP v6.2 GRAFICA ENTERPRISE
 
-File principale Streamlit: `nota_webapp_google_drive.py`
+Versione v6.2 con grafica mantenuta sullo stile mostrato dall'utente:
+- sidebar blu scuro;
+- logo F+;
+- pulsanti laterali arrotondati;
+- card bianche;
+- KPI in dashboard;
+- tab pulite;
+- pulsanti rame/oro;
+- schermata Report PDF e Dashboard coerenti con FinancePlus Mail Archive Enterprise.
+
+File principale Streamlit:
+`nota_webapp_google_drive.py`
 
 Accesso iniziale:
 - admin
 - admin123
 
-## Correzione v5.2
-- Fix errore: `module 'email' has no attribute 'policy'`
-- Parser email sostituito con:
-  - `from email import policy`
-  - `from email.parser import BytesParser`
-- Scarico IMAP più stabile su Streamlit Cloud
-
-## Parametri Aruba consigliati
-- Server IMAP: imaps.aruba.it
-- Porta: 993
-- SSL: sì
-- Cartella IMAP: INBOX
-
-## Modulo Mail
-- Scarica Mail
-- R/Mail
-- R/Collaboratori
-- R/Aziende
+Funzioni confermate:
+- Dashboard avanzata
+- Mail
+- Smart Import
+- NOTA
+- Anagrafica
+- Scheda Azienda
+- Pratiche
+- Documenti con selezione multipla e invio mail
+- Report PDF professionali
+- Calendar
+- Admin / Impostazioni

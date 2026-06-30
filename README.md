@@ -1,31 +1,15 @@
-# FinancePlus 360 TOP v6.2 GRAFICA ENTERPRISE
+# FinancePlus 360 TOP v6.3 FIX ANAGRAFICA
 
-Versione v6.2 con grafica mantenuta sullo stile mostrato dall'utente:
-- sidebar blu scuro;
-- logo F+;
-- pulsanti laterali arrotondati;
-- card bianche;
-- KPI in dashboard;
-- tab pulite;
-- pulsanti rame/oro;
-- schermata Report PDF e Dashboard coerenti con FinancePlus Mail Archive Enterprise.
+Versione con grafica Enterprise mantenuta e correzione anagrafica.
 
-File principale Streamlit:
-`nota_webapp_google_drive.py`
+## Correzioni
+- Ragione sociale pulita: non deve più includere codice fiscale, P.IVA, REA o testo agganciato.
+- Amministratore: prova a estrarre nome e cognome dell'amministratore/legale rappresentante dal testo della visura/report.
+- Impostazioni > Correzione dati: pulsante per correggere anche le anagrafiche già importate male.
 
-Accesso iniziale:
-- admin
-- admin123
-
-Funzioni confermate:
-- Dashboard avanzata
-- Mail
-- Smart Import
-- NOTA
-- Anagrafica
-- Scheda Azienda
-- Pratiche
-- Documenti con selezione multipla e invio mail
-- Report PDF professionali
-- Calendar
-- Admin / Impostazioni
+## Procedura consigliata dopo aggiornamento
+1. Carica la v6.3 su GitHub.
+2. Riavvia Streamlit.
+3. Vai in Impostazioni > Correzione dati.
+4. Clicca "Correggi automaticamente anagrafiche esistenti".
+5. Controlla la Scheda Azienda.

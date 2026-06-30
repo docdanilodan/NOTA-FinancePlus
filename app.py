@@ -16,7 +16,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 
-APP_VERSION="TOP v6.2 GRAFICA ENTERPRISE"
+APP_VERSION="TOP v6.3 FIX ANAGRAFICA"
 DATA=Path("data"); UPLOADS=Path("uploads"); EXPORTS=Path("exports"); STATIC=Path("static"); MANUALS=Path("manuals"); MAILDIR=Path("mail")
 for p in [DATA,UPLOADS,EXPORTS,STATIC,MANUALS,MAILDIR]: p.mkdir(parents=True,exist_ok=True)
 DB=DATA/"financeplus_360_v6_1.db"
@@ -376,23 +376,131 @@ def m(text, pats):
         mm=re.search(pat,text,flags=re.I|re.M)
         if mm:return " ".join(mm.group(1).strip().split())
     return ""
+def clean_company_name(value):
+    v = str(value or "").strip()
+    v = re.sub(r"\s+", " ", v)
+    # elimina code fiscali / piva e testi agganciati dopo denominazione
+    v = re.split(r"(?i)\b(codice\s+fiscale|cod\.?\s*fisc\.?|cf\b|c\.f\.|partita\s+iva|p\.?\s*iva|rea\b|pec\b|sede\b|indirizzo\b)\b", v)[0].strip()
+    v = re.sub(r"(?i)\s*(codice\s+fiscale|cod\.?\s*fisc\.?|cf|c\.f\.|partita\s+iva|p\.?\s*iva)\s*[:\-]?\s*[A-Z0-9]{8,20}.*$", "", v).strip()
+    # se inizia con parole tecniche, rimuovile
+    v = re.sub(r"(?i)^(denominazione|ragione sociale|impresa|societa'?|società)\s*[:\-]?\s*", "", v).strip()
+    return v
+
+def clean_person_name(value):
+    v = str(value or "").strip()
+    v = re.sub(r"\s+", " ", v)
+    v = re.split(r"(?i)\b(codice\s+fiscale|cod\.?\s*fisc\.?|cf\b|c\.f\.|nato|nata|residente|carica|dal|domicilio|indirizzo|pec)\b", v)[0].strip()
+    v = re.sub(r"(?i)^(amministratore|amministratore unico|legale rappresentante|rappresentante legale|titolare|socio amministratore|nome e cognome)\s*[:\-]?\s*", "", v).strip()
+    # elimina residui tipo "Non sono stati rilevati..." se non sembra nome
+    bad = ["non sono stati rilevati", "nessun", "non disponibile", "protesti"]
+    if any(b in v.lower() for b in bad):
+        return ""
+    # tieni parole ragionevoli di nome/cognome
+    parts = [p for p in v.split() if re.match(r"^[A-Za-zÀ-ÿ'’\.-]+$", p)]
+    if len(parts) >= 2:
+        return " ".join(parts[:4]).strip()
+    return v
+
+def extract_company_name_from_text(text, filename=""):
+    t = text or ""
+    patterns = [
+        r"(?is)denominazione\s*[:\-]?\s*([^\n\r]{3,160})",
+        r"(?is)ragione\s+sociale\s*[:\-]?\s*([^\n\r]{3,160})",
+        r"(?is)dati\s+anagrafici\s+.*?denominazione\s*[:\-]?\s*([^\n\r]{3,160})",
+        r"(?is)impresa\s*[:\-]?\s*([^\n\r]{3,160})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, t)
+        if m:
+            val = clean_company_name(m.group(1))
+            if val and len(val) > 2:
+                return val
+
+    # fallback da filename solo se pulito
+    fn = Path(filename or "").stem.replace("_"," ").replace("-"," ")
+    fn = re.sub(r"(?i)\b(visura|report|bilancio|centrale|rischi|pdf|analisi)\b", " ", fn)
+    fn = re.sub(r"\s+", " ", fn).strip()
+    return clean_company_name(fn)
+
+def extract_administrator_from_text(text):
+    t = text or ""
+    patterns = [
+        r"(?is)amministratore\s+unico\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.\s]{3,80})",
+        r"(?is)legale\s+rappresentante\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.\s]{3,80})",
+        r"(?is)rappresentante\s+legale\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.\s]{3,80})",
+        r"(?is)carica\s*[:\-]?\s*amministratore\s+unico.*?(?:nome\s+e\s+cognome|nominativo)?\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.\s]{3,80})",
+        r"(?is)organi\s+sociali.*?amministratore\s+unico\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.\s]{3,80})",
+        r"(?is)titolare\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.\s]{3,80})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, t)
+        if m:
+            val = clean_person_name(m.group(1))
+            if val and len(val.split()) >= 2:
+                return val
+
+    # fallback: riga successiva a "amministratore unico"
+    lines = [re.sub(r"\s+", " ", x).strip() for x in t.splitlines() if re.sub(r"\s+", " ", x).strip()]
+    for i, line in enumerate(lines):
+        if re.search(r"(?i)amministratore\s+unico|legale\s+rappresentante|rappresentante\s+legale", line):
+            for nxt in lines[i+1:i+5]:
+                val = clean_person_name(nxt)
+                if val and len(val.split()) >= 2 and not re.search(r"(?i)codice|fiscale|carica|dal|sede|protesti", val):
+                    return val
+    return ""
+
+def repair_existing_company_records():
+    rows = q("SELECT id, ragione_sociale, amministratore, testo_estratto FROM aziende")
+    fixed = 0
+    for _, row in rows.iterrows():
+        new_rag = clean_company_name(row.get("ragione_sociale",""))
+        new_amm = clean_person_name(row.get("amministratore",""))
+        testo = str(row.get("testo_estratto","") or "")
+        if testo and (not new_amm or "non sono stati" in new_amm.lower() or "protesti" in new_amm.lower()):
+            extracted = extract_administrator_from_text(testo)
+            if extracted:
+                new_amm = extracted
+        if new_rag != str(row.get("ragione_sociale","") or "") or new_amm != str(row.get("amministratore","") or ""):
+            x("UPDATE aziende SET ragione_sociale=?, amministratore=? WHERE id=?", (new_rag, new_amm, int(row.get("id"))))
+            fixed += 1
+    return fixed
+
 def parse(text):
-    t=re.sub(r"[ \t]+"," ",text or "")
-    return {
-        "ragione_sociale":m(t,[r"denominazione\s*[:\-]?\s*([A-Z0-9\s\.\-&']{3,80})",r"ragione\s+sociale\s*[:\-]?\s*([A-Z0-9\s\.\-&']{3,80})",r"([A-Z0-9\s\.\-&']{3,80}\s+S\.?R\.?L\.?)"]),
-        "piva":m(t,[r"partita\s+iva\s*[:\-]?\s*([0-9]{11})",r"p\.?\s*iva\s*[:\-]?\s*([0-9]{11})"]),
-        "cf":m(t,[r"codice\s+fiscale\s*[:\-]?\s*([A-Z0-9]{11,16})",r"c\.?\s*f\.?\s*[:\-]?\s*([A-Z0-9]{11,16})"]),
-        "rea":m(t,[r"r\.?e\.?a\.?\s*[:\-]?\s*([A-Z]{2}\s*[-]?\s*[0-9]{3,10})",r"rea\s*[:\-]?\s*([A-Z]{2}\s*[-]?\s*[0-9]{3,10})"]),
-        "pec":m(t,[r"pec\s*[:\-]?\s*([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})"]),
-        "sede":m(t,[r"sede\s+legale\s*[:\-]?\s*(.{5,140}?)(?:\s+pec|\s+rea|\s+codice|\s+partita|\n|$)"]),
-        "amministratore":m(t,[r"amministratore\s+unico\s*[:\-]?\s*([A-ZÀ-Ü'\s]{5,80})",r"legale\s+rappresentante\s*[:\-]?\s*([A-ZÀ-Ü'\s]{5,80})"]),
-        "capitale_sociale":m(t,[r"capitale\s+sociale\s*[:\-]?\s*(?:euro|€)?\s*([0-9\.\,]+)"]),
-        "ateco":m(t,[r"codice\s+ateco\s*[:\-]?\s*([0-9]{2}\.?[0-9]{0,2}\.?[0-9]{0,2})",r"ateco\s*[:\-]?\s*([0-9]{2}\.?[0-9]{0,2}\.?[0-9]{0,2})"]),
-        "data_costituzione":m(t,[r"data\s+costituzione\s*[:\-]?\s*([0-9]{1,2}[\/\.-][0-9]{1,2}[\/\.-][0-9]{2,4})"]),
-        "stato_attivita":m(t,[r"stato\s+attivit[aà]\s*[:\-]?\s*([A-ZÀ-Ü\s]{3,60})"]),
-        "comune":m(t,[r"comune\s*[:\-]?\s*([A-ZÀ-Ü\s']{3,60})"]),
-        "provincia":m(t,[r"provincia\s*[:\-]?\s*([A-Z]{2})"])
-    }
+    d={k:"" for k in ["ragione_sociale","piva","cf","rea","pec","sede","comune","provincia","amministratore","capitale_sociale","ateco","data_costituzione","stato_attivita"]}
+    t=text or ""
+    def m(p):
+        r=re.search(p,t,re.I|re.S)
+        return re.sub(r"\s+"," ",r.group(1)).strip() if r else ""
+
+    d["piva"]=m(r"(?:partita iva|p\.?\s*iva)\s*[:\-]?\s*([0-9]{11})")
+    d["cf"]=m(r"(?:codice fiscale|cod\.?\s*fisc\.?|c\.f\.|cf)\s*[:\-]?\s*([A-Z0-9]{8,20})")
+    d["rea"]=m(r"\bREA\s*[:\-]?\s*([A-Z]{0,3}\s*[0-9]{3,10})")
+    d["pec"]=m(r"([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})")
+    d["capitale_sociale"]=m(r"capitale sociale\s*[:\-]?\s*(?:euro|€)?\s*([0-9\.\,]+)")
+    d["ateco"]=m(r"(?:ateco|codice attivit[aà])\s*[:\-]?\s*([0-9\.]{2,10}\s*[^\n\r]{0,80})")
+    d["data_costituzione"]=m(r"(?:data costituzione|costituita il)\s*[:\-]?\s*([0-9]{1,2}[\/\.-][0-9]{1,2}[\/\.-][0-9]{2,4})")
+    d["stato_attivita"]=m(r"(?:stato attivit[aà]|stato impresa)\s*[:\-]?\s*([^\n\r]{3,80})")
+
+    # Ragione sociale pulita: mai con codice fiscale agganciato
+    d["ragione_sociale"]=extract_company_name_from_text(t)
+    d["ragione_sociale"]=clean_company_name(d["ragione_sociale"])
+
+    # Sede/comune/provincia
+    d["sede"]=m(r"(?:sede legale|indirizzo sede|sede)\s*[:\-]?\s*([^\n\r]{5,160})")
+    d["sede"]=re.split(r"(?i)\b(pec|rea|codice fiscale|partita iva|telefono|mail)\b", d["sede"])[0].strip()
+    cp=m(r"\b([A-Z][a-zA-ZÀ-ÿ'\s]+)\s*\(([A-Z]{2})\)")
+    if cp:
+        mm=re.search(r"\b([A-Z][a-zA-ZÀ-ÿ'\s]+)\s*\(([A-Z]{2})\)",cp)
+        if mm:
+            d["comune"]=mm.group(1).strip()
+            d["provincia"]=mm.group(2).strip()
+
+    # Amministratore: estrazione nome e cognome, non frasi descrittive
+    d["amministratore"]=extract_administrator_from_text(t)
+    d["amministratore"]=clean_person_name(d["amministratore"])
+
+    return d
+
 def doctype(text,name=""):
     s=(text+" "+name).lower()
     if "visura" in s or "registro imprese" in s or "camera di commercio" in s:return "VISURA CCIAA"
@@ -1138,8 +1246,8 @@ def manual():
     for p in MANUALS.glob("*.pdf"): st.download_button("Scarica "+p.name,p.read_bytes(),file_name=p.name)
 
 def admin():
-    hero("Admin","Utenti, backup, sicurezza e log.")
-    t1,t2,t3,t4,t5=st.tabs(["Utenti","Cambio password","Permessi","Backup","Log"])
+    hero("Impostazioni","Utenti, backup, sicurezza, correzioni anagrafiche e log.")
+    t1,t2,t3,t4,t5,t6=st.tabs(["Utenti","Cambio password","Permessi","Backup","Correzione dati","Log"])
     with t1:
         st.dataframe(q("SELECT id,username,ruolo,nome,attivo FROM utenti"),use_container_width=True)
         u=st.text_input("Username")
@@ -1173,8 +1281,15 @@ def admin():
             st.success("Stato aggiornato.")
     with t4:
         if DB.exists():
-            st.download_button("Scarica backup database",DB.read_bytes(),file_name="financeplus_360_v6_1_backup.db")
+            st.download_button("Scarica backup database",DB.read_bytes(),file_name="financeplus_360_v6_3_backup.db")
     with t5:
+        st.subheader("Correzione anagrafiche importate")
+        st.caption("Pulisce ragione sociale eliminando codice fiscale/P.IVA agganciati e prova a recuperare l'amministratore dal testo estratto.")
+        if st.button("Correggi automaticamente anagrafiche esistenti", use_container_width=True):
+            n = repair_existing_company_records()
+            st.success(f"Correzione completata. Record aggiornati: {n}")
+        st.dataframe(q("SELECT id,ragione_sociale,piva,cf,pec,sede,amministratore,fonte FROM aziende ORDER BY id DESC"), use_container_width=True)
+    with t6:
         st.subheader("Accessi")
         st.dataframe(q("SELECT username,esito,ip,created_at FROM login_attempts ORDER BY id DESC LIMIT 100"),use_container_width=True)
         st.subheader("Log attività")

@@ -1,15 +1,15 @@
-# FinancePlus 360 TOP v6.3 FIX ANAGRAFICA
+# FinancePlus 360 TOP v6.4 FIX SCHEDA AZIENDA
 
-Versione con grafica Enterprise mantenuta e correzione anagrafica.
+Correzioni richieste:
+- campo created_at formattato in italiano: es. 30 giugno 2026, alle ore 17:59
+- amministratore: migliorata estrazione di nome e cognome, evitando valori come "fino alla revoca"
+- comune e provincia: recuperati dalla sede legale quando presenti nel testo estratto
+- modifica manuale anagrafica direttamente dentro Scheda Azienda > Anagrafica
+- grafica Enterprise invariata
 
-## Correzioni
-- Ragione sociale pulita: non deve più includere codice fiscale, P.IVA, REA o testo agganciato.
-- Amministratore: prova a estrarre nome e cognome dell'amministratore/legale rappresentante dal testo della visura/report.
-- Impostazioni > Correzione dati: pulsante per correggere anche le anagrafiche già importate male.
-
-## Procedura consigliata dopo aggiornamento
-1. Carica la v6.3 su GitHub.
-2. Riavvia Streamlit.
+## Dopo aggiornamento
+1. Carica i file della v6.4 su GitHub / Streamlit.
+2. Riavvia l'app.
 3. Vai in Impostazioni > Correzione dati.
 4. Clicca "Correggi automaticamente anagrafiche esistenti".
-5. Controlla la Scheda Azienda.
+5. Apri Scheda Azienda e verifica i campi.

@@ -16,7 +16,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 
-APP_VERSION="TOP v6.3 FIX ANAGRAFICA"
+APP_VERSION="TOP v6.4 FIX SCHEDA AZIENDA"
 DATA=Path("data"); UPLOADS=Path("uploads"); EXPORTS=Path("exports"); STATIC=Path("static"); MANUALS=Path("manuals"); MAILDIR=Path("mail")
 for p in [DATA,UPLOADS,EXPORTS,STATIC,MANUALS,MAILDIR]: p.mkdir(parents=True,exist_ok=True)
 DB=DATA/"financeplus_360_v6_1.db"
@@ -401,6 +401,134 @@ def clean_person_name(value):
         return " ".join(parts[:4]).strip()
     return v
 
+
+IT_MONTHS = {1:"gennaio",2:"febbraio",3:"marzo",4:"aprile",5:"maggio",6:"giugno",7:"luglio",8:"agosto",9:"settembre",10:"ottobre",11:"novembre",12:"dicembre"}
+
+def format_datetime_it(value):
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    for parser in (
+        lambda x: datetime.fromisoformat(x.replace("Z", "")),
+        lambda x: datetime.strptime(x, "%Y-%m-%d %H:%M:%S"),
+        lambda x: datetime.strptime(x, "%Y-%m-%d"),
+    ):
+        try:
+            dt = parser(s)
+            if dt.hour == 0 and dt.minute == 0 and len(s) <= 10:
+                return f"{dt.day} {IT_MONTHS.get(dt.month, dt.month)} {dt.year}"
+            return f"{dt.day} {IT_MONTHS.get(dt.month, dt.month)} {dt.year}, alle ore {dt.strftime('%H:%M')}"
+        except Exception:
+            pass
+    return s
+
+def looks_like_person_name(value):
+    v = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not v:
+        return False
+    bad = {"fino","alla","revoca","carica","amministratore","unico","legale","rappresentante","nominativo","nome","cognome","sede","via","viale","piazza","socio","protesti","nessun","non","sono","stati","rilevati","attiva"}
+    parts = [p.strip(" .,-") for p in v.split() if p.strip(" .,-")]
+    if len(parts) < 2:
+        return False
+    good = []
+    for p in parts:
+        if not re.match(r"^[A-Za-zÀ-ÿ'’\.-]+$", p):
+            return False
+        if p.lower() in bad:
+            return False
+        good.append(p)
+    return len(good) >= 2
+
+# override / strengthen previous cleaning
+
+def clean_person_name(value):
+    v = str(value or "").strip()
+    v = re.sub(r"\s+", " ", v)
+    v = re.split(r"(?i)\b(codice\s+fiscale|cod\.?\s*fisc\.?|cf\b|c\.f\.|nato|nata|residente|carica|dal|domicilio|indirizzo|pec|fino\s+alla\s+revoca|fino\s+al\s+|revoca|durata\s+in\s+carica)\b", v)[0].strip()
+    v = re.sub(r"(?i)^(amministratore|amministratore unico|legale rappresentante|rappresentante legale|titolare|socio amministratore|nome e cognome|cognome e nome|nominativo)\s*[:\-]?\s*", "", v).strip()
+    bad = ["non sono stati rilevati", "nessun", "non disponibile", "protesti", "fino alla revoca"]
+    if any(b in v.lower() for b in bad):
+        return ""
+    parts = [p for p in v.split() if re.match(r"^[A-Za-zÀ-ÿ'’\.-]+$", p)]
+    if len(parts) >= 2:
+        candidate = " ".join(parts[:4]).strip()
+        return candidate if looks_like_person_name(candidate) else ""
+    return v if looks_like_person_name(v) else ""
+
+def extract_administrator_from_text(text):
+    t = re.sub(r"\s+", " ", str(text or " "))
+    patterns = [
+        r"(?is)(?:cognome\s+e\s+nome|nome\s+e\s+cognome|nominativo)\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+){1,3})",
+        r"(?is)legale\s+rappresentante\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+){1,3})",
+        r"(?is)rappresentante\s+legale\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+){1,3})",
+        r"(?is)amministratore\s+unico\s*(?:[:\-]|,)?\s*(?:sig\.?|sig\.ra|dott\.?|dr\.?)?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+){1,3})",
+        r"(?is)organi\s+sociali.*?(?:cognome\s+e\s+nome|nome\s+e\s+cognome|nominativo)\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+){1,3})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, t)
+        if m:
+            val = clean_person_name(m.group(1))
+            if val and looks_like_person_name(val):
+                return val
+
+    # search around keywords
+    for kw in ["amministratore unico", "legale rappresentante", "rappresentante legale", "organi sociali"]:
+        for m in re.finditer(re.escape(kw), t, flags=re.I):
+            chunk = t[m.start(): m.start()+300]
+            cand = re.search(r"([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+){1,3})", chunk)
+            if cand:
+                val = clean_person_name(cand.group(1))
+                if val and looks_like_person_name(val):
+                    return val
+
+    lines = [re.sub(r"\s+", " ", x).strip() for x in str(text or "").splitlines() if re.sub(r"\s+", " ", x).strip()]
+    for i, line in enumerate(lines):
+        if re.search(r"(?i)amministratore\s+unico|legale\s+rappresentante|rappresentante\s+legale|organi\s+sociali", line):
+            for nxt in lines[i:i+6]:
+                cand = re.search(r"([A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’\.-]+){1,3})", nxt)
+                if cand:
+                    val = clean_person_name(cand.group(1))
+                    if val and looks_like_person_name(val):
+                        return val
+    return ""
+
+def extract_sede_data(text):
+    t = re.sub(r"\s+", " ", str(text or " "))
+    result = {"sede":"", "comune":"", "provincia":""}
+    patterns = [
+        r"(?is)sede\s+legale\s*[:\-]?\s*([A-Z0-9À-ÿ'’\.,\-/ ]{5,180}?\b\d{5}\s+[A-ZÀ-ÿ'’\- ]+\s*\([A-Z]{2}\))",
+        r"(?is)sede\s*[:\-]?\s*([A-Z0-9À-ÿ'’\.,\-/ ]{5,180}?\b\d{5}\s+[A-ZÀ-ÿ'’\- ]+\s*\([A-Z]{2}\))",
+        r"(?is)via\s+[A-Z0-9À-ÿ'’\.,\-/ ]{3,120}?\b\d{5}\s+[A-ZÀ-ÿ'’\- ]+\s*\([A-Z]{2}\)",
+    ]
+    block = ""
+    for pat in patterns:
+        m = re.search(pat, t)
+        if m:
+            block = m.group(1) if m.groups() else m.group(0)
+            break
+    if not block:
+        return result
+    block = re.sub(r"\s+", " ", block).strip(" ,;.-")
+    # extract city/province
+    mcp = re.search(r"\b\d{5}\s+([A-ZÀ-ÿ'’\- ]+?)\s*\(([A-Z]{2})\)", block)
+    if mcp:
+        result["comune"] = re.sub(r"\s+", " ", mcp.group(1)).strip(" ,;.-")
+        result["provincia"] = mcp.group(2).strip()
+        # address = part before CAP + city
+        before = block[:mcp.start()].strip(" ,;.-")
+        result["sede"] = before if before else block
+    else:
+        result["sede"] = block
+    return result
+
+def format_azienda_display_df(df):
+    if df is None or len(df) == 0:
+        return df
+    xdf = df.copy()
+    if "created_at" in xdf.columns:
+        xdf["created_at"] = xdf["created_at"].apply(format_datetime_it)
+    return xdf
+
 def extract_company_name_from_text(text, filename=""):
     t = text or ""
     patterns = [
@@ -450,18 +578,38 @@ def extract_administrator_from_text(text):
     return ""
 
 def repair_existing_company_records():
-    rows = q("SELECT id, ragione_sociale, amministratore, testo_estratto FROM aziende")
+    rows = q("SELECT id, ragione_sociale, amministratore, sede, comune, provincia, testo_estratto FROM aziende")
     fixed = 0
     for _, row in rows.iterrows():
-        new_rag = clean_company_name(row.get("ragione_sociale",""))
-        new_amm = clean_person_name(row.get("amministratore",""))
+        old_rag = str(row.get("ragione_sociale","") or "")
+        old_amm = str(row.get("amministratore","") or "")
+        old_sede = str(row.get("sede","") or "")
+        old_comune = str(row.get("comune","") or "")
+        old_prov = str(row.get("provincia","") or "")
         testo = str(row.get("testo_estratto","") or "")
-        if testo and (not new_amm or "non sono stati" in new_amm.lower() or "protesti" in new_amm.lower()):
-            extracted = extract_administrator_from_text(testo)
-            if extracted:
-                new_amm = extracted
-        if new_rag != str(row.get("ragione_sociale","") or "") or new_amm != str(row.get("amministratore","") or ""):
-            x("UPDATE aziende SET ragione_sociale=?, amministratore=? WHERE id=?", (new_rag, new_amm, int(row.get("id"))))
+
+        new_rag = clean_company_name(old_rag)
+        new_amm = clean_person_name(old_amm)
+        sede_data = extract_sede_data(testo)
+        new_sede = old_sede.strip()
+        new_comune = old_comune.strip()
+        new_prov = old_prov.strip()
+
+        if testo:
+            if not new_amm or new_amm.lower() in ["fino alla revoca", "alla revoca"]:
+                extracted = extract_administrator_from_text(testo)
+                if extracted:
+                    new_amm = extracted
+            if sede_data.get("sede"):
+                if not new_sede or len(new_sede) < 5 or new_sede.lower() in ["sede legale", "via"]:
+                    new_sede = sede_data.get("sede","")
+            if sede_data.get("comune") and (not new_comune):
+                new_comune = sede_data.get("comune","")
+            if sede_data.get("provincia") and (not new_prov):
+                new_prov = sede_data.get("provincia","")
+
+        if (new_rag != old_rag) or (new_amm != old_amm) or (new_sede != old_sede) or (new_comune != old_comune) or (new_prov != old_prov):
+            x("UPDATE aziende SET ragione_sociale=?, amministratore=?, sede=?, comune=?, provincia=? WHERE id=?", (new_rag, new_amm, new_sede, new_comune, new_prov, int(row.get("id"))))
             fixed += 1
     return fixed
 
@@ -481,24 +629,21 @@ def parse(text):
     d["data_costituzione"]=m(r"(?:data costituzione|costituita il)\s*[:\-]?\s*([0-9]{1,2}[\/\.-][0-9]{1,2}[\/\.-][0-9]{2,4})")
     d["stato_attivita"]=m(r"(?:stato attivit[aà]|stato impresa)\s*[:\-]?\s*([^\n\r]{3,80})")
 
-    # Ragione sociale pulita: mai con codice fiscale agganciato
-    d["ragione_sociale"]=extract_company_name_from_text(t)
-    d["ragione_sociale"]=clean_company_name(d["ragione_sociale"])
+    d["ragione_sociale"] = clean_company_name(extract_company_name_from_text(t))
 
-    # Sede/comune/provincia
-    d["sede"]=m(r"(?:sede legale|indirizzo sede|sede)\s*[:\-]?\s*([^\n\r]{5,160})")
-    d["sede"]=re.split(r"(?i)\b(pec|rea|codice fiscale|partita iva|telefono|mail)\b", d["sede"])[0].strip()
-    cp=m(r"\b([A-Z][a-zA-ZÀ-ÿ'\s]+)\s*\(([A-Z]{2})\)")
-    if cp:
-        mm=re.search(r"\b([A-Z][a-zA-ZÀ-ÿ'\s]+)\s*\(([A-Z]{2})\)",cp)
-        if mm:
-            d["comune"]=mm.group(1).strip()
-            d["provincia"]=mm.group(2).strip()
+    sede_data = extract_sede_data(t)
+    d["sede"] = sede_data.get("sede","") or m(r"(?:sede legale|indirizzo sede|sede)\s*[:\-]?\s*([^\n\r]{5,160})")
+    d["sede"] = re.split(r"(?i)\b(pec|rea|codice fiscale|partita iva|telefono|mail)\b", d["sede"])[0].strip(" ,;.-")
+    d["comune"] = sede_data.get("comune","")
+    d["provincia"] = sede_data.get("provincia","")
 
-    # Amministratore: estrazione nome e cognome, non frasi descrittive
-    d["amministratore"]=extract_administrator_from_text(t)
-    d["amministratore"]=clean_person_name(d["amministratore"])
+    if not d["comune"] or not d["provincia"]:
+        cp = re.search(r"\b\d{5}\s+([A-ZÀ-ÿ'’\- ]+?)\s*\(([A-Z]{2})\)", re.sub(r"\s+"," ",t))
+        if cp:
+            d["comune"] = d["comune"] or cp.group(1).strip(" ,;.-")
+            d["provincia"] = d["provincia"] or cp.group(2).strip()
 
+    d["amministratore"] = clean_person_name(extract_administrator_from_text(t))
     return d
 
 def doctype(text,name=""):
@@ -1122,6 +1267,17 @@ def scheda_azienda():
     ba_df = q("SELECT banca,referente,email,telefono,affidamento,note FROM banche_azienda WHERE azienda=? ORDER BY banca", (az,))
     ra_df = q("SELECT rating,score,fascia,pd,note,created_at FROM rating_azienda WHERE azienda=? ORDER BY id DESC", (az,))
 
+    dati_fmt = format_azienda_display_df(dati)
+    docs_fmt = docs_df.copy()
+    if len(docs_fmt) and "created_at" in docs_fmt.columns:
+        docs_fmt["created_at"] = docs_fmt["created_at"].apply(format_datetime_it)
+    pr_fmt = pr_df.copy()
+    if len(pr_fmt) and "created_at" in pr_fmt.columns:
+        pr_fmt["created_at"] = pr_fmt["created_at"].apply(format_datetime_it)
+    ra_fmt = ra_df.copy()
+    if len(ra_fmt) and "created_at" in ra_fmt.columns:
+        ra_fmt["created_at"] = ra_fmt["created_at"].apply(format_datetime_it)
+
     with t0:
         c1,c2,c3,c4 = st.columns(4)
         c1.metric("Documenti", len(docs_df))
@@ -1130,13 +1286,41 @@ def scheda_azienda():
         c4.metric("Scadenze", len(sc_df))
         if len(ra_df):
             st.info(f"Ultimo rating: {ra_df.iloc[0]['rating']} - Score {ra_df.iloc[0]['score']} - Fascia {ra_df.iloc[0]['fascia']}")
-        st.dataframe(dati.T.rename(columns={0:"Valore"}) if len(dati) else dati, use_container_width=True)
+        st.dataframe(dati_fmt.T.rename(columns={0:"Valore"}) if len(dati_fmt) else dati_fmt, use_container_width=True)
 
     with t1:
-        st.dataframe(dati.T.rename(columns={0:"Valore"}) if len(dati) else dati, use_container_width=True)
+        st.dataframe(dati_fmt.T.rename(columns={0:"Valore"}) if len(dati_fmt) else dati_fmt, use_container_width=True)
+        if len(dati):
+            st.divider()
+            st.subheader("Modifica anagrafica azienda")
+            rec = dati.iloc[0].to_dict()
+            rid = int(rec.get("id"))
+            c1,c2,c3 = st.columns(3)
+            rag = c1.text_input("Ragione sociale", value=str(rec.get("ragione_sociale","")), key=f"rag_{rid}")
+            piva = c2.text_input("P.IVA", value=str(rec.get("piva","")), key=f"piva_{rid}")
+            cf = c3.text_input("Codice fiscale", value=str(rec.get("cf","")), key=f"cf_{rid}")
+            c1,c2,c3 = st.columns(3)
+            rea = c1.text_input("REA", value=str(rec.get("rea","")), key=f"rea_{rid}")
+            pec = c2.text_input("PEC", value=str(rec.get("pec","")), key=f"pec_{rid}")
+            amm = c3.text_input("Amministratore", value=str(rec.get("amministratore","")), key=f"amm_{rid}")
+            c1,c2,c3 = st.columns(3)
+            sede = c1.text_input("Sede legale", value=str(rec.get("sede","")), key=f"sede_{rid}")
+            comune = c2.text_input("Comune", value=str(rec.get("comune","")), key=f"comune_{rid}")
+            provincia = c3.text_input("Provincia", value=str(rec.get("provincia","")), key=f"prov_{rid}")
+            c1,c2,c3 = st.columns(3)
+            cap_soc = c1.text_input("Capitale sociale", value=str(rec.get("capitale_sociale","")), key=f"cap_{rid}")
+            ateco = c2.text_input("ATECO", value=str(rec.get("ateco","")), key=f"ateco_{rid}")
+            dc = c3.text_input("Data costituzione", value=str(rec.get("data_costituzione","")), key=f"dc_{rid}")
+            c1,c2 = st.columns(2)
+            stato_att = c1.text_input("Stato attività", value=str(rec.get("stato_attivita","")), key=f"st_{rid}")
+            coll = c2.selectbox("Collaboratore", [""] + people("Collaboratore"), index=([""] + people("Collaboratore")).index(str(rec.get("collaboratore",""))) if str(rec.get("collaboratore","")) in ([""] + people("Collaboratore")) else 0, key=f"coll_{rid}")
+            if st.button("Salva modifiche anagrafiche", use_container_width=True, key=f"save_{rid}"):
+                x("UPDATE aziende SET ragione_sociale=?, piva=?, cf=?, rea=?, pec=?, sede=?, comune=?, provincia=?, amministratore=?, capitale_sociale=?, ateco=?, data_costituzione=?, stato_attivita=?, collaboratore=? WHERE id=?", (rag,piva,cf,rea,pec,sede,comune,provincia,amm,cap_soc,ateco,dc,stato_att,coll,rid))
+                st.success("Anagrafica aggiornata.")
+                st.rerun()
 
     with t2:
-        st.dataframe(docs_df, use_container_width=True)
+        st.dataframe(docs_fmt, use_container_width=True)
 
     with t3:
         st.dataframe(mail_df, use_container_width=True)
@@ -1145,7 +1329,7 @@ def scheda_azienda():
         st.dataframe(note_df, use_container_width=True)
 
     with t5:
-        st.dataframe(pr_df, use_container_width=True)
+        st.dataframe(pr_fmt, use_container_width=True)
 
     with t6:
         st.subheader("Nuova scadenza")
@@ -1178,33 +1362,34 @@ def scheda_azienda():
         rating = c1.text_input("Rating", value="")
         score = c2.text_input("Score", value="")
         fascia = c3.text_input("Fascia", value="")
-        pd_val = c4.text_input("PD", value="")
+        pdv = c4.text_input("PD %", value="")
         note_r = st.text_area("Note rating")
         if st.button("Salva rating"):
-            x("INSERT INTO rating_azienda(azienda,rating,score,fascia,pd,note,created_at) VALUES(?,?,?,?,?,?,?)", (az,rating,money(score),fascia,pd_val,note_r,datetime.now().isoformat()))
+            x("INSERT INTO rating_azienda(azienda,rating,score,fascia,pd,note,created_at) VALUES(?,?,?,?,?,?,?)", (az,rating,score,fascia,pdv,note_r,datetime.now().isoformat()))
             st.success("Rating salvato.")
             st.rerun()
 
         st.subheader("Scadenze")
         st.dataframe(sc_df, use_container_width=True)
-        st.subheader("Banche")
+        st.subheader("Banche / referenti")
         st.dataframe(ba_df, use_container_width=True)
-        st.subheader("Rating storico")
-        st.dataframe(ra_df, use_container_width=True)
+        st.subheader("Storico rating")
+        st.dataframe(ra_fmt, use_container_width=True)
 
     with t7:
-        if st.button("Genera PDF Scheda Azienda", use_container_width=True):
-            p = make_pdf_professional(f"Scheda Azienda - {az}", [
-                ("🏢 Anagrafica", dati),
-                ("Documenti", docs_df),
-                ("📥 Scarica Mail", mail_df),
+        if st.button("Genera PDF completo scheda azienda", use_container_width=True):
+            out = make_pdf(f"Scheda Azienda - {az}", [
+                ("Anagrafica", dati_fmt),
+                ("Documenti", docs_fmt),
+                ("Mail", mail_df),
                 ("Note", note_df),
-                ("Pratiche", pr_df),
+                ("Pratiche", pr_fmt),
                 ("Scadenze", sc_df),
-                ("Banche", ba_df),
-                ("Rating", ra_df),
-            ], f"Scheda_Azienda_{safe(az)}.pdf", "Dossier aziendale completo")
-            st.download_button("Scarica PDF Scheda Azienda", p.read_bytes(), file_name=p.name)
+                ("Banche / Referenti", ba_df),
+                ("Rating", ra_fmt),
+            ], f"scheda_azienda_{safe(az)}.pdf")
+            st.success(f"PDF creato: {out.name}")
+            st.download_button("Scarica PDF", out.read_bytes(), file_name=out.name, mime="application/pdf")
 
 def report():
     hero("📄 Report PDF","Report PDF professionali con copertina, logo, riepilogo e firma.")
